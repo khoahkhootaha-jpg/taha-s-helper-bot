@@ -650,12 +650,50 @@ def generate_image_file(prompt):
         raise RuntimeError("پاسخ Pollinations قابل خواندن نبود.") from e
 
 
-def generate_video_file(prompt, duration=4, aspect_ratio="16:9"):
-    """Generate a short MP4 through the current Pollinations video API.
+def _pollinations_video_models():
+    """Return live video models from Pollinations, with safe aliases as fallback."""
+    fallback = [
+        "veo", "veo-1080p", "seedance-pro", "seedance-2.0",
+        "wan", "wan-fast", "wan-pro", "wan-pro-1080p",
+        "grok-video-pro", "happyhorse-1.1", "p-video-720p",
+        "p-video-1080p", "nova-reel"
+    ]
+    try:
+        r = requests.get("https://gen.pollinations.ai/video/models", timeout=20)
+        if r.ok:
+            data = r.json()
+            models = []
+            if isinstance(data, dict):
+                raw = data.get("data") or data.get("models") or []
+            elif isinstance(data, list):
+                raw = data
+            else:
+                raw = []
+            for item in raw:
+                if isinstance(item, str):
+                    models.append(item)
+                elif isinstance(item, dict):
+                    mid = item.get("id") or item.get("model") or item.get("name")
+                    if isinstance(mid, str) and mid.strip():
+                        models.append(mid.strip())
+            if models:
+                return models
+    except Exception as e:
+        print("[VIDEO MODEL DISCOVERY]", repr(e))
+    return fallback
 
-    The current API normally returns MP4 bytes, but some gateways/providers can
-    return JSON containing a completed public URL. Handle both forms.
-    """
+
+def _save_video_bytes(content):
+    if not content or len(content) < 1024:
+        raise RuntimeError("Pollinations فایل ویدیویی خالی یا ناقص برگرداند.")
+    name = f"video_{uuid.uuid4().hex}.mp4"
+    path = GENERATED_DIR / name
+    path.write_bytes(content)
+    return "/generated/" + name
+
+
+def generate_video_file(prompt, duration=4, aspect_ratio="16:9"):
+    """Generate a video using Pollinations' live video endpoint and model catalog."""
     prompt = (prompt or "").strip()
     if not prompt:
         raise RuntimeError("توضیح ویدیو خالی است.")
@@ -663,7 +701,7 @@ def generate_video_file(prompt, duration=4, aspect_ratio="16:9"):
         raise RuntimeError("برای ساخت ویدیو باید POLLINATIONS_API_KEY را در Environment Variables تنظیم کنی.")
 
     try:
-        duration = max(1, min(int(duration), 10))
+        duration = max(4, min(int(duration), 10))
     except (TypeError, ValueError):
         duration = 4
     aspect_ratio = str(aspect_ratio or "16:9")
@@ -679,101 +717,94 @@ def generate_video_file(prompt, duration=4, aspect_ratio="16:9"):
         "or add a different main subject. User request: " + prompt
     )
 
-    encoded = quote(creative_prompt, safe="")
     headers = {
         "Authorization": f"Bearer {POLLINATIONS_API_KEY}",
         "Accept": "video/mp4, application/json, */*",
         "Cache-Control": "no-cache",
         "X-Taha-Request-ID": uuid.uuid4().hex,
     }
-    params = {
-        "model": POLLINATIONS_VIDEO_MODEL or "veo",
-        "duration": duration,
-        "aspectRatio": aspect_ratio,
-    }
 
-    try:
-        r = requests.get(
-            "https://gen.pollinations.ai/video/" + encoded,
-            params=params,
-            headers=headers,
-            timeout=1200,
-        )
+    preferred = (POLLINATIONS_VIDEO_MODEL or "veo").strip()
+    candidates = [preferred] + [m for m in _pollinations_video_models() if m != preferred]
+    errors = []
 
-        if not r.ok:
-            detail = r.text[:1200].replace("\n", " ").strip()
-            if r.status_code == 402:
-                raise RuntimeError(f"POLLINATIONS_402:{detail}")
-            if r.status_code == 401:
-                raise RuntimeError("کلید Pollinations نامعتبر است یا اجازه ساخت ویدیو ندارد.")
-            if r.status_code == 403:
-                raise RuntimeError("کلید Pollinations اجازه استفاده از مدل ویدیو را ندارد.")
-            if r.status_code == 404:
-                raise RuntimeError(
-                    f"مدل ویدیو پیدا نشد: {params['model']}. "
-                    "در Environment Variables مقدار POLLINATIONS_VIDEO_MODEL را بررسی کن."
-                )
-            if r.status_code == 429:
-                raise RuntimeError("محدودیت درخواست Pollinations فعال شده است. کمی بعد دوباره امتحان کن.")
-            raise RuntimeError(f"Pollinations خطا داد ({r.status_code}): {detail}")
+    for model in candidates:
+        params = {
+            "model": model,
+            "duration": duration,
+            "aspectRatio": aspect_ratio,
+            "key": POLLINATIONS_API_KEY,
+        }
+        try:
+            encoded = quote(creative_prompt, safe="")
+            r = requests.get(
+                "https://gen.pollinations.ai/video/" + encoded,
+                params=params,
+                headers=headers,
+                timeout=1200,
+            )
+            content_type = (r.headers.get("Content-Type") or "").lower()
 
-        content_type = (r.headers.get("Content-Type") or "").lower()
+            if not r.ok:
+                detail = r.text[:1000].replace("\n", " ").strip()
+                errors.append(f"{model}: HTTP {r.status_code} {detail}")
+                # These normally mean the model itself is unavailable for this key;
+                # try the next discovered model instead of stopping immediately.
+                if r.status_code in (400, 404, 409, 422, 429, 501):
+                    continue
+                if r.status_code == 402:
+                    raise RuntimeError(f"POLLINATIONS_402:{detail}")
+                if r.status_code in (401, 403):
+                    raise RuntimeError("کلید Pollinations نامعتبر است یا دسترسی ساخت ویدیو برای آن فعال نیست.")
+                continue
 
-        # Form 1: direct MP4 response.
-        if r.content and ("video/" in content_type or r.content[:4] == b"\x00\x00\x00\x18" or r.content[:3] == b"ID3"):
-            name = f"video_{uuid.uuid4().hex}.mp4"
-            path = GENERATED_DIR / name
-            path.write_bytes(r.content)
-            return "/generated/" + name
+            # Normal current API response: MP4 bytes.
+            if r.content and ("video/" in content_type or r.content[:4] == b"\x00\x00\x00\x18" or r.content[:4] == b"ftyp" or r.content[:3] == b"ID3"):
+                return _save_video_bytes(r.content)
 
-        # Form 2: JSON response containing a completed video URL.
-        if "json" in content_type or r.text.lstrip().startswith("{"):
-            try:
-                data = r.json()
-            except ValueError:
-                data = None
-            video_url = None
-            if isinstance(data, dict):
-                if isinstance(data.get("url"), str):
-                    video_url = data["url"]
-                elif isinstance(data.get("data"), list) and data["data"]:
-                    first = data["data"][0]
-                    if isinstance(first, dict) and isinstance(first.get("url"), str):
-                        video_url = first["url"]
-            if video_url:
-                # Download it server-side so the chat keeps working even when
-                # the provider URL expires later.
-                vr = requests.get(
-                    video_url,
-                    headers={"Authorization": f"Bearer {POLLINATIONS_API_KEY}"},
-                    timeout=120,
-                )
-                vr.raise_for_status()
-                if not vr.content:
-                    raise RuntimeError("Pollinations یک فایل ویدیویی خالی برگرداند.")
-                name = f"video_{uuid.uuid4().hex}.mp4"
-                path = GENERATED_DIR / name
-                path.write_bytes(vr.content)
-                return "/generated/" + name
+            # Some gateways return JSON containing a completed video URL.
+            if "json" in content_type or r.text.lstrip().startswith("{"):
+                try:
+                    data = r.json()
+                except ValueError:
+                    data = None
+                video_url = None
+                if isinstance(data, dict):
+                    for key_name in ("url", "video_url", "output"):
+                        if isinstance(data.get(key_name), str):
+                            video_url = data[key_name]
+                            break
+                    if not video_url and isinstance(data.get("data"), list) and data["data"]:
+                        first = data["data"][0]
+                        if isinstance(first, dict):
+                            for key_name in ("url", "video_url", "output"):
+                                if isinstance(first.get(key_name), str):
+                                    video_url = first[key_name]
+                                    break
+                if video_url:
+                    vr = requests.get(
+                        video_url,
+                        headers={"Authorization": f"Bearer {POLLINATIONS_API_KEY}"},
+                        timeout=300,
+                    )
+                    if vr.ok and vr.content:
+                        return _save_video_bytes(vr.content)
+                errors.append(f"{model}: پاسخ JSON بدون فایل ویدیو")
+                continue
 
-            detail = str(data)[:1000] if data is not None else r.text[:1000]
-            raise RuntimeError(f"پاسخ ویدیوی Pollinations قابل استفاده نبود: {detail}")
+            if len(r.content) > 1024:
+                return _save_video_bytes(r.content)
+            errors.append(f"{model}: پاسخ خالی")
 
-        # Last-resort: if the server sent bytes without a useful content type,
-        # accept them as MP4 when they are non-trivial in size.
-        if len(r.content) > 1024:
-            name = f"video_{uuid.uuid4().hex}.mp4"
-            path = GENERATED_DIR / name
-            path.write_bytes(r.content)
-            return "/generated/" + name
+        except requests.RequestException as e:
+            errors.append(f"{model}: {e}")
+            continue
 
-        raise RuntimeError("Pollinations پاسخ ویدیوی قابل استفاده‌ای برنگرداند.")
-
-    except requests.HTTPError as e:
-        raise RuntimeError(f"دریافت فایل ویدیو ناموفق بود: HTTP {e.response.status_code if e.response else 'خطا'}") from e
-    except requests.RequestException as e:
-        print("[VIDEO GEN CONNECTION ERROR]", repr(e))
-        raise RuntimeError("اتصال به سرویس ساخت ویدیو برقرار نشد. اینترنت و کلید Pollinations را بررسی کن.") from e
+    short_errors = " | ".join(errors[:5])
+    raise RuntimeError(
+        "هیچ مدل ویدیوی در دسترس Pollinations نتوانست ویدیو بسازد. "
+        "مدل‌های موجود/دسترسی کلید را بررسی کن. " + short_errors
+    )
 
 
 HTML_PAGE = r'''<!doctype html>
@@ -937,7 +968,7 @@ async function generateVideo(){
  const timer=setTimeout(()=>activeController&&activeController.abort(),310000);
  try{
   const r=await fetch('/api/generate-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:p,duration:4,aspect_ratio:'16:9'}),signal:activeController.signal});
-  const d=await r.json();if(!r.ok)throw new Error(d.error||'ساخت ویدیو ناموفق بود');
+  const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d.error||('HTTP '+r.status+' - ساخت ویدیو ناموفق بود')));
   messages.push({role:'assistant',content:'ویدیو ساخته شد\n\nپرامپت: '+p,video_url:d.url,video_prompt:p,sources:[]});
   render();document.getElementById('videoPrompt').value='';toggleVideoPanel();
   if(!currentChatId)currentChatId=crypto.randomUUID?crypto.randomUUID():String(Date.now());
