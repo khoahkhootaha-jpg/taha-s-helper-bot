@@ -274,7 +274,7 @@ def infer_file_name(user_text, reply):
         if any(w in text for w in words):
             ext = candidate
             break
-    base = "meraj_file"
+    base = "file"
     # A simple Persian/English hint for a nicer filename, without unsafe characters.
     if "پروژه" in text or "project" in text:
         base = "project"
