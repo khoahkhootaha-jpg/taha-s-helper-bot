@@ -30,7 +30,9 @@ VISION_MODEL = "openai/gpt-oss-120b"
 TRANSCRIBE_MODEL = "whisper-large-v3-turbo"
 IMAGE_GEN_PROVIDER = "pollinations"
 POLLINATIONS_API_KEY = ""
+POLLINATIONS_IMAGE_MODEL = "gptimage"
 POLLINATIONS_VIDEO_MODEL = "veo"
+POLLINATIONS_VIDEO_MODELS = []
 GENERATED_DIR = BASE_DIR / "generated"
 GENERATED_DIR.mkdir(exist_ok=True)
 FILES_DIR = BASE_DIR / "generated_files"
@@ -42,7 +44,7 @@ app.config["JSON_AS_ASCII"] = False
 
 
 def setup():
-    global GEMINI_API_KEY, API_KEY, MODEL, VISION_MODEL, TRANSCRIBE_MODEL, POLLINATIONS_API_KEY, POLLINATIONS_VIDEO_MODEL
+    global GEMINI_API_KEY, API_KEY, MODEL, VISION_MODEL, TRANSCRIBE_MODEL, POLLINATIONS_API_KEY, POLLINATIONS_IMAGE_MODEL, POLLINATIONS_VIDEO_MODEL, POLLINATIONS_VIDEO_MODELS
     print("\n" + "=" * 56)
     print("                    Taha's Helper Bot")
     print("=" * 56)
@@ -50,7 +52,8 @@ def setup():
     # Main chat + vision use Groq's OpenAI-compatible API.
     API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
     POLLINATIONS_API_KEY = os.environ.get("POLLINATIONS_API_KEY", "").strip()
-    POLLINATIONS_VIDEO_MODEL = os.environ.get("POLLINATIONS_VIDEO_MODEL", "veo").strip() or "veo"
+    POLLINATIONS_IMAGE_MODEL = os.environ.get("POLLINATIONS_IMAGE_MODEL", "").strip()
+    POLLINATIONS_VIDEO_MODEL = os.environ.get("POLLINATIONS_VIDEO_MODEL", "").strip()
 
     if not API_KEY and sys.stdin.isatty():
         print("🔑 Groq API Key را همین‌جا در ترمینال وارد کن.")
@@ -72,8 +75,32 @@ def setup():
 
     print("✅ Groq API Key دریافت شد.")
     print("🤖 مدل متنی:", MODEL)
-    print("🖼 مدل بینایی:", VISION_MODEL)
-    print("🎙 مدل صدا:", TRANSCRIBE_MODEL)
+    print("👁 مدل Vision:", VISION_MODEL)
+    print("🎙 مدل تبدیل صدا به متن:", TRANSCRIBE_MODEL)
+
+    if POLLINATIONS_API_KEY:
+        try:
+            discovered = _pollinations_image_models()
+            if not POLLINATIONS_IMAGE_MODEL or POLLINATIONS_IMAGE_MODEL not in discovered:
+                preferred = ["gptimage", "gpt-image-2", "flux", "qwen-image", "zimage"]
+                POLLINATIONS_IMAGE_MODEL = next((m for m in preferred if m in discovered), discovered[0] if discovered else "gptimage")
+            print("🖼 مدل ساخت تصویر (Pollinations):", POLLINATIONS_IMAGE_MODEL)
+
+            POLLINATIONS_VIDEO_MODELS = _pollinations_video_models()
+            if not POLLINATIONS_VIDEO_MODEL:
+                POLLINATIONS_VIDEO_MODEL = POLLINATIONS_VIDEO_MODELS[0] if POLLINATIONS_VIDEO_MODELS else "auto"
+            print("🎬 مدل ساخت ویدیو (Pollinations):", POLLINATIONS_VIDEO_MODEL)
+            if POLLINATIONS_VIDEO_MODELS:
+                print("   ↳ مدل‌های ویدیو در دسترس:", ", ".join(POLLINATIONS_VIDEO_MODELS[:8]))
+        except Exception as e:
+            print("⚠️ کشف مدل‌های Pollinations ناموفق بود:", repr(e))
+            POLLINATIONS_IMAGE_MODEL = POLLINATIONS_IMAGE_MODEL or "gptimage"
+            POLLINATIONS_VIDEO_MODEL = POLLINATIONS_VIDEO_MODEL or "auto"
+            print("🖼 مدل ساخت تصویر (Pollinations):", POLLINATIONS_IMAGE_MODEL)
+            print("🎬 مدل ساخت ویدیو (Pollinations):", POLLINATIONS_VIDEO_MODEL)
+    else:
+        print("🖼 مدل ساخت تصویر: Pollinations key وارد نشده")
+        print("🎬 مدل ساخت ویدیو: Pollinations key وارد نشده")
     return True
 
 def read_history():
@@ -557,6 +584,34 @@ def edit_image_file(image_path, prompt):
         raise RuntimeError("پاسخ سرویس ویرایش تصویر قابل خواندن نبود.") from e
 
 
+def _pollinations_image_models():
+    """Discover live Pollinations image models from the public catalog."""
+    try:
+        r = requests.get("https://gen.pollinations.ai/image/models", timeout=20)
+        if not r.ok:
+            print("[IMAGE MODEL DISCOVERY] HTTP", r.status_code, r.text[:300])
+            return []
+        data = r.json()
+        raw = data.get("data") if isinstance(data, dict) else data
+        if isinstance(data, dict) and not raw:
+            raw = data.get("models") or []
+        models = []
+        for item in raw or []:
+            if isinstance(item, str):
+                mid = item.strip()
+            elif isinstance(item, dict):
+                mid = item.get("id") or item.get("model") or item.get("name")
+                mid = mid.strip() if isinstance(mid, str) else ""
+            else:
+                mid = ""
+            if mid and mid not in models:
+                models.append(mid)
+        return models
+    except Exception as e:
+        print("[IMAGE MODEL DISCOVERY]", repr(e))
+        return []
+
+
 def generate_image_file(prompt):
     """Generate an image through the current Pollinations API with robust fallbacks."""
     prompt = (prompt or "").strip()
@@ -580,7 +635,7 @@ def generate_image_file(prompt):
         "requested idea, not ignoring the user's intent. User request: " + prompt
     )
 
-    image_model = "gptimage"
+    image_model = POLLINATIONS_IMAGE_MODEL or "gptimage"
     headers = {
         "Authorization": f"Bearer {POLLINATIONS_API_KEY}",
         "Accept": "image/*, application/json",
@@ -724,17 +779,26 @@ def generate_video_file(prompt, duration=4, aspect_ratio="16:9"):
         "X-Taha-Request-ID": uuid.uuid4().hex,
     }
 
-    preferred = (POLLINATIONS_VIDEO_MODEL or "veo").strip()
-    candidates = [preferred] + [m for m in _pollinations_video_models() if m != preferred]
+    # The key is the same one used by image generation. Start with the documented
+    # no-model request so model permissions/routing are handled by Pollinations.
+    discovered_video_models = POLLINATIONS_VIDEO_MODELS or _pollinations_video_models()
+    candidates = []
+    if POLLINATIONS_VIDEO_MODEL and POLLINATIONS_VIDEO_MODEL != "auto":
+        candidates.append(POLLINATIONS_VIDEO_MODEL)
+    candidates += [m for m in discovered_video_models if m not in candidates]
+    candidates.append("__auto__")
     errors = []
 
     for model in candidates:
+        # Use the SAME Pollinations key as image generation.
+        # Do not force a model here: Pollinations can route to an available video model.
         params = {
-            "model": model,
             "duration": duration,
             "aspectRatio": aspect_ratio,
             "key": POLLINATIONS_API_KEY,
         }
+        if model != "__auto__":
+            params["model"] = model
         try:
             encoded = quote(creative_prompt, safe="")
             r = requests.get(
