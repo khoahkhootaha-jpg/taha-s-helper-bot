@@ -274,7 +274,7 @@ def infer_file_name(user_text, reply):
         if any(w in text for w in words):
             ext = candidate
             break
-    base = "file"
+    base = "meraj_file"
     # A simple Persian/English hint for a nicer filename, without unsafe characters.
     if "پروژه" in text or "project" in text:
         base = "project"
@@ -651,52 +651,129 @@ def generate_image_file(prompt):
 
 
 def generate_video_file(prompt, duration=4, aspect_ratio="16:9"):
-    """Generate a short MP4 with Pollinations' current video endpoint."""
+    """Generate a short MP4 through the current Pollinations video API.
+
+    The current API normally returns MP4 bytes, but some gateways/providers can
+    return JSON containing a completed public URL. Handle both forms.
+    """
     prompt = (prompt or "").strip()
     if not prompt:
         raise RuntimeError("توضیح ویدیو خالی است.")
     if not POLLINATIONS_API_KEY:
         raise RuntimeError("برای ساخت ویدیو باید POLLINATIONS_API_KEY را در Environment Variables تنظیم کنی.")
+
+    try:
+        duration = max(1, min(int(duration), 10))
+    except (TypeError, ValueError):
+        duration = 4
+    aspect_ratio = str(aspect_ratio or "16:9")
+    if aspect_ratio not in {"16:9", "9:16", "1:1"}:
+        aspect_ratio = "16:9"
+
     prompt = prompt[:4000]
     creative_prompt = (
         "Create a polished, imaginative short video based on the user's requested topic. "
-        "Use creative cinematic choices for camera movement, composition, lighting, environment, "
-        "motion, atmosphere and visual storytelling. Expand a short idea into a coherent scene, "
-        "but never contradict explicit user instructions or replace the requested main subject. "
-        "User request: " + prompt
+        "Use cinematic composition, natural motion, camera movement, lighting, environment, "
+        "depth and visual storytelling. Expand a short idea into a coherent scene, "
+        "but never contradict explicit user instructions, replace the requested main subject, "
+        "or add a different main subject. User request: " + prompt
     )
+
     encoded = quote(creative_prompt, safe="")
     headers = {
         "Authorization": f"Bearer {POLLINATIONS_API_KEY}",
-        "Accept": "video/mp4, application/json",
+        "Accept": "video/mp4, application/json, */*",
         "Cache-Control": "no-cache",
         "X-Taha-Request-ID": uuid.uuid4().hex,
     }
+    params = {
+        "model": POLLINATIONS_VIDEO_MODEL or "veo",
+        "duration": duration,
+        "aspectRatio": aspect_ratio,
+    }
+
     try:
         r = requests.get(
             "https://gen.pollinations.ai/video/" + encoded,
-            params={
-                "model": POLLINATIONS_VIDEO_MODEL,
-                "duration": max(1, min(int(duration), 10)),
-                "aspectRatio": aspect_ratio,
-                "audio": "true",
-            },
+            params=params,
             headers=headers,
-            timeout=300,
+            timeout=1200,
         )
-        if r.ok and r.content:
+
+        if not r.ok:
+            detail = r.text[:1200].replace("\n", " ").strip()
+            if r.status_code == 402:
+                raise RuntimeError(f"POLLINATIONS_402:{detail}")
+            if r.status_code == 401:
+                raise RuntimeError("کلید Pollinations نامعتبر است یا اجازه ساخت ویدیو ندارد.")
+            if r.status_code == 403:
+                raise RuntimeError("کلید Pollinations اجازه استفاده از مدل ویدیو را ندارد.")
+            if r.status_code == 404:
+                raise RuntimeError(
+                    f"مدل ویدیو پیدا نشد: {params['model']}. "
+                    "در Environment Variables مقدار POLLINATIONS_VIDEO_MODEL را بررسی کن."
+                )
+            if r.status_code == 429:
+                raise RuntimeError("محدودیت درخواست Pollinations فعال شده است. کمی بعد دوباره امتحان کن.")
+            raise RuntimeError(f"Pollinations خطا داد ({r.status_code}): {detail}")
+
+        content_type = (r.headers.get("Content-Type") or "").lower()
+
+        # Form 1: direct MP4 response.
+        if r.content and ("video/" in content_type or r.content[:4] == b"\x00\x00\x00\x18" or r.content[:3] == b"ID3"):
             name = f"video_{uuid.uuid4().hex}.mp4"
             path = GENERATED_DIR / name
             path.write_bytes(r.content)
             return "/generated/" + name
-        if r.status_code == 402:
-            detail = r.text[:500].replace("\n", " ").strip()
-            raise RuntimeError(f"POLLINATIONS_402:{detail}")
-        detail = r.text[:800].replace("\n", " ").strip()
-        raise RuntimeError(f"Pollinations خطا داد ({r.status_code}): {detail}")
+
+        # Form 2: JSON response containing a completed video URL.
+        if "json" in content_type or r.text.lstrip().startswith("{"):
+            try:
+                data = r.json()
+            except ValueError:
+                data = None
+            video_url = None
+            if isinstance(data, dict):
+                if isinstance(data.get("url"), str):
+                    video_url = data["url"]
+                elif isinstance(data.get("data"), list) and data["data"]:
+                    first = data["data"][0]
+                    if isinstance(first, dict) and isinstance(first.get("url"), str):
+                        video_url = first["url"]
+            if video_url:
+                # Download it server-side so the chat keeps working even when
+                # the provider URL expires later.
+                vr = requests.get(
+                    video_url,
+                    headers={"Authorization": f"Bearer {POLLINATIONS_API_KEY}"},
+                    timeout=120,
+                )
+                vr.raise_for_status()
+                if not vr.content:
+                    raise RuntimeError("Pollinations یک فایل ویدیویی خالی برگرداند.")
+                name = f"video_{uuid.uuid4().hex}.mp4"
+                path = GENERATED_DIR / name
+                path.write_bytes(vr.content)
+                return "/generated/" + name
+
+            detail = str(data)[:1000] if data is not None else r.text[:1000]
+            raise RuntimeError(f"پاسخ ویدیوی Pollinations قابل استفاده نبود: {detail}")
+
+        # Last-resort: if the server sent bytes without a useful content type,
+        # accept them as MP4 when they are non-trivial in size.
+        if len(r.content) > 1024:
+            name = f"video_{uuid.uuid4().hex}.mp4"
+            path = GENERATED_DIR / name
+            path.write_bytes(r.content)
+            return "/generated/" + name
+
+        raise RuntimeError("Pollinations پاسخ ویدیوی قابل استفاده‌ای برنگرداند.")
+
+    except requests.HTTPError as e:
+        raise RuntimeError(f"دریافت فایل ویدیو ناموفق بود: HTTP {e.response.status_code if e.response else 'خطا'}") from e
     except requests.RequestException as e:
         print("[VIDEO GEN CONNECTION ERROR]", repr(e))
-        raise RuntimeError("اتصال به سرویس ساخت ویدیو برقرار نشد.") from e
+        raise RuntimeError("اتصال به سرویس ساخت ویدیو برقرار نشد. اینترنت و کلید Pollinations را بررسی کن.") from e
 
 
 HTML_PAGE = r'''<!doctype html>
