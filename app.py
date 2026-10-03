@@ -9,6 +9,7 @@ import base64
 import time
 import os
 import sys
+import zipfile
 from urllib.parse import quote, quote_plus, urlparse, parse_qs, unquote
 
 import requests
@@ -136,6 +137,7 @@ def save_chat(chat_id, messages, title=None):
             if isinstance(m.get("video_prompt"), str): item["video_prompt"] = m.get("video_prompt")
             if isinstance(m.get("file_url"), str): item["file_url"] = m.get("file_url")
             if isinstance(m.get("file_name"), str): item["file_name"] = m.get("file_name")
+            if isinstance(m.get("code_bundle"), dict): item["code_bundle"] = m.get("code_bundle")
             clean_messages.append(item)
     if title is None:
         title = old.get("title") or "چت جدید"
@@ -260,78 +262,99 @@ def is_file_request(text):
         "فایل بساز", "فایل ایجاد", "فایل درست کن", "فایل آماده کن", "فایل تولید کن",
         "فایل برام", "فایل برای من", "فایل بده", "فایل خروجی", "فایل دانلود",
         "create a file", "make a file", "generate a file", "create file", "make file",
-        "downloadable file", "export as file"
+        "downloadable file", "export as file", "کد بنویس", "کد کامل", "پروژه بساز", "سایت بساز", "وبسایت بساز", "بازی بساز", "برنامه بساز", "اپلیکیشن بساز", "create a website", "build a website", "build an app", "build a game", "write code", "generate code", "create html", "html page", "html بساز", "کد html"
     ]
     if any(x in t for x in triggers):
+        return True
+    if any(x in t for x in ("سایت", "وبسایت", "صفحه وب", "بازی", "برنامه", "اپلیکیشن", "کد")) and any(v in t for v in ("بساز", "ایجاد کن", "درست کن", "طراحی کن", "بنویس", "پیاده کن")):
         return True
     return "فایل" in t and any(v in t for v in ("بساز", "ایجاد", "درست کن", "تولید", "آماده", "بده"))
 
 
 def requested_file_instruction(user_text):
     return (
-        "کاربر صراحتاً درخواست ساخت فایل کرده است. پاسخ را طوری تولید کن که محتوای فایل دقیق و کامل باشد. "
-        "اگر فایل کدنویسی/متنی است، کل محتوای فایل را فقط داخل یک بلوک کد سه‌تایی قرار بده و بیرون آن حداکثر یک توضیح کوتاه بنویس. "
-        "داخل بلوک کد هیچ توضیح اضافه، مقدمه یا markdown دیگری نگذار. "
-        "اگر کاربر نام فایل یا پسوند مشخصی خواست، همان را رعایت کن. درخواست کاربر: " + (user_text or "")
+        "کاربر ساخت کد/فایل را خواسته است. اگر پروژه چندفایلی است، همه فایل‌ها را کامل تولید کن. "
+        "برای هر فایل دقیقاً از قالب زیر استفاده کن و نام فایل را در ویژگی filename بنویس:\n"
+        "```html filename=\"index.html\"\n...محتوای کامل...\n```\n"
+        "برای CSS، JavaScript، Python و سایر زبان‌ها نیز پسوند و نام واقعی فایل را قرار بده. "
+        "هر فایل در بلوک کد جداگانه باشد. اگر پروژه HTML است، فایل اصلی را index.html بنام و تمام CSS/JS وابسته را هم بساز. "
+        "فایل‌ها باید با مسیرهای نسبی به هم ارجاع بدهند. بیرون بلوک‌ها فقط توضیح کوتاه بده. درخواست: " + (user_text or "")
     )
 
 
-def infer_file_name(user_text, reply):
-    text = ((user_text or "") + " " + (reply or "")).lower()
-    # Explicit filename with a common extension.
-    m = re.search(r"[\\/\\w.-]+\.(py|js|ts|html|css|json|xml|csv|txt|md|java|c|cpp|h|hpp|sql|sh|bat|yml|yaml|toml|ini|jsx|tsx)$", text, re.I)
-    if m:
-        name = Path(m.group(0).split('/')[-1].split('\\')[-1]).name
-        return name
-    ext = ".txt"
-    mapping = [
-        (("python", "پایتون", "py"), ".py"),
-        (("javascript", "جاوااسکریپت", "js"), ".js"),
-        (("typescript", "تایپ‌اسکریپت", "typescript", "ts"), ".ts"),
-        (("html", "اچ تی ام ال"), ".html"),
-        (("css", "سی اس اس"), ".css"),
-        (("json",), ".json"),
-        (("csv",), ".csv"),
-        (("markdown", "مارک‌داون", "md"), ".md"),
-        (("sql",), ".sql"),
-        (("java",), ".java"),
-        (("c++", "cpp"), ".cpp"),
-    ]
-    for words, candidate in mapping:
-        if any(w in text for w in words):
-            ext = candidate
-            break
-    base = "meraj_file"
-    # A simple Persian/English hint for a nicer filename, without unsafe characters.
-    if "پروژه" in text or "project" in text:
-        base = "project"
-    elif "کد" in text or "code" in text:
-        base = "code"
-    elif "لیست" in text or "list" in text:
-        base = "list"
-    return base + ext
+def extract_code_files(reply, user_text=""):
+    pattern = re.compile(r"```([^\n`]*)\n([\s\S]*?)```", re.M)
+    matches = list(pattern.finditer(reply or ""))
+    files = []
+    used = set()
+    for i, match in enumerate(matches, 1):
+        header = (match.group(1) or "").strip()
+        body = (match.group(2) or "").strip("\n")
+        if not body.strip():
+            continue
+        name_match = re.search(r"(?:filename|file|path)\s*=\s*['\"]?([^'\"\s]+)", header, re.I)
+        if name_match:
+            name = name_match.group(1)
+            lang = header.split()[0].lower() if header.split() else "text"
+        else:
+            parts = header.split()
+            lang = (parts[0] if parts else "text").lower()
+            ext_map = {"python":"py", "py":"py", "javascript":"js", "js":"js", "typescript":"ts", "ts":"ts", "html":"html", "css":"css", "json":"json", "xml":"xml", "sql":"sql", "java":"java", "bash":"sh", "sh":"sh", "yaml":"yml", "yml":"yml", "markdown":"md", "md":"md", "text":"txt", "txt":"txt", "c++":"cpp", "cpp":"cpp", "c":"c", "php":"php", "go":"go", "rust":"rs", "ruby":"rb"}
+            ext = ext_map.get(lang, "txt")
+            stem = "index" if ext == "html" else ("style" if ext == "css" else ("script" if ext in ("js", "ts") else ("app" if i == 1 else f"file_{i}")))
+            name = f"{stem}.{ext}"
+        name = str(name).replace('\\', '/').lstrip('/')
+        safe_parts = [re.sub(r"[^A-Za-z0-9_.-]", "_", part) for part in name.split('/') if part not in ("", ".", "..")]
+        name = "/".join(safe_parts) or f"file_{i}.txt"
+        if name in used:
+            base, dot, ext = name.rpartition('.')
+            name = f"{base or name}_{i}{dot}{ext}" if dot else f"{name}_{i}"
+        used.add(name)
+        files.append((name, body))
+    return files
 
 
-def extract_file_content(reply):
-    matches = re.findall(r"```(?:[\w#+.-]+)?\s*\n?(.*?)```", reply or "", flags=re.S)
-    if matches:
-        return matches[0].strip()
-    return (reply or "").strip()
-
-
-def save_requested_file(user_text, reply):
-    content = extract_file_content(reply)
-    if not content:
+def save_code_bundle(user_text, reply):
+    files = extract_code_files(reply, user_text)
+    if not files:
         return None
-    name = infer_file_name(user_text, reply)
-    # Prevent path traversal and duplicate names.
-    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", name).strip("._") or "meraj_file.txt"
-    if "." not in safe_name:
-        safe_name += ".txt"
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    target = FILES_DIR / f"{stamp}_{safe_name}"
-    target.write_text(content, encoding="utf-8")
-    return {"url": "/generated-download-file/" + target.name, "name": safe_name}
+    bundle_id = stamp
+    folder = GENERATED_DIR / "code_bundles" / bundle_id
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, content in files:
+        target = (folder / name).resolve()
+        target.relative_to(folder.resolve())
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    zip_name = f"{bundle_id}_project.zip"
+    if len(files) > 1:
+        zip_path = FILES_DIR / zip_name
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, _ in files:
+                zf.write(folder / name, arcname=name)
+        download_url = "/generated-download-file/" + zip_name
+        download_name = zip_name
+    else:
+        single_name = f"{bundle_id}_{Path(files[0][0]).name}"
+        single_path = FILES_DIR / single_name
+        single_path.write_bytes((folder / files[0][0]).read_bytes())
+        download_url = "/generated-download-file/" + single_name
+        download_name = files[0][0]
+    result = {
+        "files": [{"name": name, "url": download_url} for name, _ in files],
+        "zip_url": download_url if len(files) > 1 else None,
+        "file_url": download_url,
+        "file_name": download_name,
+        "preview_url": None,
+        "bundle_id": bundle_id,
+    }
+    html_files = [name for name, _ in files if name.lower().endswith((".html", ".htm"))]
+    if html_files:
+        main_html = next((n for n in html_files if Path(n).name.lower() == "index.html"), html_files[0])
+        result["preview_url"] = f"/generated-preview/{bundle_id}/{main_html}"
+    return result
+
 
 def _compact_for_tpm(messages, max_chars=6500):
     """Aggressively compact a request so Groq's 8k TPM request limit is not exceeded."""
@@ -905,7 +928,7 @@ textarea{flex:1;resize:none;border:0;outline:0;background:transparent;color:whit
 .send,.attach,.mic,.imagegen{width:44px;height:44px;border:0;border-radius:13px;cursor:pointer;display:grid;place-items:center}.send{background:#fff;color:#111;font-size:20px}.attach,.mic,.imagegen{background:#292930}.imagegen.active{background:#3b2f70}.mic.recording{background:#7f1d1d;animation:pulse 1s infinite}.send:disabled,.mic:disabled{opacity:.35}.generated-video{width:min(100%,720px);border-radius:14px;display:block;margin-top:10px;background:#000}.video-panel{}.file-input{display:none}
 .status{max-width:820px;margin:6px auto 0;color:#888;font-size:11px;padding:0 8px}.file-pill{max-width:820px;margin:0 auto 7px;color:#bbb;font-size:12px;padding:0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .msg-actions{display:flex;gap:6px;margin-top:8px}.msg-action{border:1px solid #34343d;background:#18181d;color:#bcbcc5;border-radius:9px;padding:5px 9px;font-size:11px;cursor:pointer}.msg-action:hover{background:#292930;color:#fff}.sources{margin-top:9px;padding-top:8px;border-top:1px solid #34343d;font-size:12px}.sources-title{color:#aaa;margin-bottom:5px}.source-link{display:block;color:#b9b9c5;text-decoration:none;padding:3px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.source-link:hover{color:#fff;text-decoration:underline}.web-badge{display:inline-block;font-size:10px;color:#aaa;background:#17171c;border:1px solid #303039;border-radius:7px;padding:2px 6px;margin-bottom:7px}
-.image-panel{max-width:820px;margin:0 auto 7px;display:none;padding:8px;background:#17171c;border:1px solid #30303a;border-radius:14px;gap:7px;align-items:center}.image-panel.open{display:flex}.image-panel input{flex:1;min-width:0;background:#0f0f13;border:1px solid #30303a;color:#fff;border-radius:10px;padding:10px;outline:none}.image-panel button{border:1px solid #34343d;background:#25252c;color:#fff;border-radius:10px;padding:9px 12px;cursor:pointer}.generated-image{max-width:100%;border-radius:14px;margin-top:10px;display:block}.image-tools{display:flex;gap:7px;margin-top:8px;align-items:center}.image-download{text-decoration:none!important;display:inline-flex!important;align-items:center;justify-content:center}.image-caption{font-size:12px;color:#aaa;margin-top:6px}.file-tools{display:flex;gap:7px;margin-top:9px;align-items:center;flex-wrap:wrap}.file-download{text-decoration:none!important}.code-block{margin:12px 0 4px;background:#0d0d10;border:1px solid #30303a;border-radius:12px;overflow:hidden;direction:ltr;text-align:left}.code-head{display:flex;align-items:center;justify-content:space-between;padding:7px 9px;background:#17171c;border-bottom:1px solid #30303a;color:#aaa;font-size:11px}.code-copy{border:1px solid #34343d;background:#25252c;color:#ddd;border-radius:7px;padding:4px 8px;font-size:11px;cursor:pointer}.code-block code{display:block;white-space:pre;overflow:auto;padding:12px;font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#eee}.cancel-btn{display:none;border:1px solid #4a2d2d;background:#241719;color:#ddd;border-radius:9px;padding:4px 8px;font-size:11px;cursor:pointer}.cancel-btn.show{display:inline-block}
+.image-panel{max-width:820px;margin:0 auto 7px;display:none;padding:8px;background:#17171c;border:1px solid #30303a;border-radius:14px;gap:7px;align-items:center}.image-panel.open{display:flex}.image-panel input{flex:1;min-width:0;background:#0f0f13;border:1px solid #30303a;color:#fff;border-radius:10px;padding:10px;outline:none}.image-panel button{border:1px solid #34343d;background:#25252c;color:#fff;border-radius:10px;padding:9px 12px;cursor:pointer}.generated-image{max-width:100%;border-radius:14px;margin-top:10px;display:block}.image-tools{display:flex;gap:7px;margin-top:8px;align-items:center}.image-download{text-decoration:none!important;display:inline-flex!important;align-items:center;justify-content:center}.image-caption{font-size:12px;color:#aaa;margin-top:6px}.file-tools{display:flex;gap:7px;margin-top:9px;align-items:center;flex-wrap:wrap}.file-download{text-decoration:none!important}.code-block{margin:12px 0 4px;background:#0d0d10;border:1px solid #30303a;border-radius:12px;overflow:hidden;direction:ltr;text-align:left}.code-head{display:flex;align-items:center;justify-content:space-between;padding:7px 9px;background:#17171c;border-bottom:1px solid #30303a;color:#aaa;font-size:11px}.code-copy{border:1px solid #34343d;background:#25252c;color:#ddd;border-radius:7px;padding:4px 8px;font-size:11px;cursor:pointer}.code-block code{display:block;white-space:pre;overflow:auto;padding:12px;font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#eee}.code-download{border:1px solid #34343d;background:#25252c;color:#ddd;border-radius:7px;padding:4px 8px;font-size:11px;text-decoration:none}.preview-btn{border:1px solid #386b56;background:#153528;color:#d8ffea;border-radius:8px;padding:7px 11px;cursor:pointer}.code-bundle-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.preview-wrap{margin-top:10px;border:1px solid #34343d;border-radius:12px;overflow:hidden;background:#fff}.preview-wrap iframe{width:100%;height:440px;border:0;background:white}.build-card{max-width:820px;margin:0 auto 16px;padding:14px;border:1px solid #34433d;border-radius:16px;background:linear-gradient(135deg,#101c18,#111318);direction:rtl}.road{height:74px;border-radius:12px;overflow:hidden;position:relative;background:linear-gradient(#15251f 0 35%,#30343a 35% 65%,#15251f 65%);}.road:before{content:"";position:absolute;left:0;right:0;top:50%;height:4px;background:repeating-linear-gradient(90deg,#f4e6a6 0 28px,transparent 28px 55px);transform:translateY(-50%);animation:roadmove .55s linear infinite}.road:after{content:"";position:absolute;left:50%;top:0;bottom:0;width:2px;background:#ffffff18;box-shadow:-80px 0 #ffffff12,80px 0 #ffffff12}.build-title{font-size:13px;color:#e5fff1;margin:0 0 9px}.build-stage{font-size:12px;color:#c6d4ce;margin-top:9px}.build-dots{display:flex;gap:5px;margin-top:8px}.build-dots i{width:6px;height:6px;border-radius:50%;background:#55d69a;animation:dotpulse 1s infinite}.build-dots i:nth-child(2){animation-delay:.2s}.build-dots i:nth-child(3){animation-delay:.4s}@keyframes roadmove{to{background-position:55px 0}}@keyframes dotpulse{50%{opacity:.2;transform:scale(.7)}}.cancel-btn{display:none;border:1px solid #4a2d2d;background:#241719;color:#ddd;border-radius:9px;padding:4px 8px;font-size:11px;cursor:pointer}.cancel-btn.show{display:inline-block}
 
 .overlay{display:none;position:fixed;inset:0;background:#0007;z-index:15}
 .overlay.open{display:block}@keyframes pulse{50%{opacity:.55}}
@@ -936,7 +959,7 @@ textarea{flex:1;resize:none;border:0;outline:0;background:transparent;color:whit
   <button class="mic" id="mic" title="ضبط صدا" onclick="toggleRecording()">🎙️</button>
   <button class="send" id="send" title="ارسال" onclick="sendMessage()">↑</button>
  </div>
- <div class="status" id="status">آماده <button id="cancelBtn" class="cancel-btn" onclick="cancelRequest()">توقف</button></div>
+ <div class="build-card" id="buildCard" hidden><div class="build-title">معراج در حال ساخت پروژه است</div><div class="road"></div><div class="build-stage" id="buildStage">در حال طراحی ساختار پروژه…</div><button id="buildPreviewBtn" class="preview-btn" type="button" disabled style="margin-top:9px;opacity:.55">پیش‌نمایش پس از آماده‌شدن فعال می‌شود</button><div class="build-dots"><i></i><i></i><i></i></div></div><div class="status" id="status">آماده <button id="cancelBtn" class="cancel-btn" onclick="cancelRequest()">توقف</button></div>
 </div>
 </main>
 </div>
@@ -964,13 +987,14 @@ function renderRichText(text,bubble){
   const head=document.createElement('div');head.className='code-head';
   const lang=document.createElement('span');lang.textContent=(m[1]||'code').trim()||'code';
   const btn=document.createElement('button');btn.className='code-copy';btn.type='button';btn.textContent='کپی کد';btn.addEventListener('click',()=>copyCodeBlock(m[2],btn));
-  head.appendChild(lang);head.appendChild(btn);pre.appendChild(head);
-  const code=document.createElement('code');code.textContent=m[2].replace(/\n$/,'');pre.appendChild(code);bubble.appendChild(pre);last=re.lastIndex;
+  const dl=document.createElement('a');dl.className='code-download';dl.textContent='دانلود';const nm=(m[1].match(/(?:filename|file|path)=['\"]?([^'\"\s]+)/i)||[])[1];const cleanCode=m[2].replace(/\n$/,'');const extMap={python:'py',py:'py',javascript:'js',js:'js',typescript:'ts',ts:'ts',html:'html',css:'css',json:'json',sql:'sql',java:'java',bash:'sh',sh:'sh'};const langName=(m[1].trim().split(/\s+/)[0]||'txt').toLowerCase();dl.download=nm||('code.'+(extMap[langName]||'txt'));dl.href=URL.createObjectURL(new Blob([cleanCode],{type:'text/plain;charset=utf-8'}));
+  head.appendChild(lang);head.appendChild(btn);head.appendChild(dl);pre.appendChild(head);
+  const code=document.createElement('code');code.textContent=cleanCode;pre.appendChild(code);bubble.appendChild(pre);last=re.lastIndex;
  }
  const after=raw.slice(last);if(after){const div=document.createElement('div');div.innerHTML=escapeHtml(after).replace(/\n/g,'<br>');bubble.appendChild(div)}
 }
 function copyCodeBlock(code,btn){const done=()=>{const old=btn.textContent;btn.textContent='کپی شد ✓';setTimeout(()=>btn.textContent=old,1200)};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(code).then(done).catch(()=>{fallbackCopy(code);done()})}else{fallbackCopy(code);done()}}
-function render(){const box=document.getElementById('messages');if(!messages.length){box.innerHTML="<div class='empty'><div><h1>Taha's Helper Bot</h1><p>هر چیزی می‌خواهی بنویس…</p></div></div>";return}box.innerHTML='';messages.forEach((m,idx)=>{const row=document.createElement('div');row.className='msg '+m.role;row.innerHTML='<div class="avatar">'+(m.role==='user'?'شما':'م')+'</div><div class="bubble"></div>';const bubble=row.querySelector('.bubble');renderRichText(m.content,bubble);if(m.image_url){const img=document.createElement('img');img.className='generated-image';img.src=m.image_url;img.alt='تصویر';img.loading='lazy';bubble.appendChild(img);const tools=document.createElement('div');tools.className='image-tools';const dl=document.createElement('a');dl.className='msg-action image-download';dl.textContent='⬇️ دانلود تصویر';let downloadUrl=m.image_url;if(typeof downloadUrl==='string'&&downloadUrl.startsWith('/generated/'))downloadUrl='/generated-download/'+downloadUrl.substring('/generated/'.length);dl.href=downloadUrl;dl.setAttribute('download','meraj-image.png');tools.appendChild(dl);bubble.appendChild(tools);const cap=document.createElement('div');cap.className='image-caption';cap.textContent='تصویر آماده است';bubble.appendChild(cap)}if(m.video_url){const video=document.createElement('video');video.className='generated-video';video.controls=true;video.playsInline=true;video.src=m.video_url;bubble.appendChild(video);const cap=document.createElement('div');cap.className='image-caption';cap.textContent='ویدیو آماده است';bubble.appendChild(cap)}if(m.file_url){const tools=document.createElement('div');tools.className='file-tools';const dl=document.createElement('a');dl.className='msg-action file-download';dl.textContent='📁 دریافت فایل'+(m.file_name?' — '+m.file_name:'');dl.href=m.file_url;dl.setAttribute('download',m.file_name||'meraj-file');tools.appendChild(dl);bubble.appendChild(tools)}if(m.role==='assistant'){const actions=document.createElement('div');actions.className='msg-actions';actions.innerHTML='<button class="msg-action" onclick="copyMsg('+idx+',this)">کپی</button><button class="msg-action" onclick="shareMsg('+idx+')">اشتراک‌گذاری</button>';bubble.appendChild(actions);if(Array.isArray(m.sources)&&m.sources.length){const web=document.createElement('div');web.className='sources';web.innerHTML='<div class="web-badge">🌐 منابع وب</div><div class="sources-title">منابع استفاده‌شده:</div>';m.sources.forEach((src,i)=>{const a=document.createElement('a');a.className='source-link';a.href=src.url;a.target='_blank';a.rel='noopener noreferrer';a.textContent='['+(i+1)+'] '+src.title;web.appendChild(a)});bubble.appendChild(web)}}box.appendChild(row)});box.scrollTop=box.scrollHeight}
+function render(){const box=document.getElementById('messages');if(!messages.length){box.innerHTML="<div class='empty'><div><h1>Taha's Helper Bot</h1><p>هر چیزی می‌خواهی بنویس…</p></div></div>";return}box.innerHTML='';messages.forEach((m,idx)=>{const row=document.createElement('div');row.className='msg '+m.role;row.innerHTML='<div class="avatar">'+(m.role==='user'?'شما':'م')+'</div><div class="bubble"></div>';const bubble=row.querySelector('.bubble');renderRichText(m.content,bubble);if(m.image_url){const img=document.createElement('img');img.className='generated-image';img.src=m.image_url;img.alt='تصویر';img.loading='lazy';bubble.appendChild(img);const tools=document.createElement('div');tools.className='image-tools';const dl=document.createElement('a');dl.className='msg-action image-download';dl.textContent='⬇️ دانلود تصویر';let downloadUrl=m.image_url;if(typeof downloadUrl==='string'&&downloadUrl.startsWith('/generated/'))downloadUrl='/generated-download/'+downloadUrl.substring('/generated/'.length);dl.href=downloadUrl;dl.setAttribute('download','meraj-image.png');tools.appendChild(dl);bubble.appendChild(tools);const cap=document.createElement('div');cap.className='image-caption';cap.textContent='تصویر آماده است';bubble.appendChild(cap)}if(m.video_url){const video=document.createElement('video');video.className='generated-video';video.controls=true;video.playsInline=true;video.src=m.video_url;bubble.appendChild(video);const cap=document.createElement('div');cap.className='image-caption';cap.textContent='ویدیو آماده است';bubble.appendChild(cap)}if(m.file_url){const tools=document.createElement('div');tools.className='file-tools';const dl=document.createElement('a');dl.className='msg-action file-download';dl.textContent='📁 دریافت فایل'+(m.file_name?' — '+m.file_name:'');dl.href=m.file_url;dl.setAttribute('download',m.file_name||'meraj-file');tools.appendChild(dl);bubble.appendChild(tools)}if(m.code_bundle){const tools=document.createElement('div');tools.className='code-bundle-tools';const dl=document.createElement('a');dl.className='msg-action file-download';dl.href=m.code_bundle.file_url||m.file_url;dl.textContent=(m.code_bundle.files&&m.code_bundle.files.length>1?'📦 دانلود همه فایل‌ها (ZIP)':'⬇️ دانلود فایل');dl.setAttribute('download','project.zip');tools.appendChild(dl);if(m.code_bundle.preview_url){const preview=document.createElement('button');preview.className='preview-btn';preview.textContent='▶ باز کردن پیش‌نمایش';preview.onclick=()=>openPreview(m.code_bundle.preview_url);tools.appendChild(preview)}bubble.appendChild(tools)}if(m.role==='assistant'){const actions=document.createElement('div');actions.className='msg-actions';actions.innerHTML='<button class="msg-action" onclick="copyMsg('+idx+',this)">کپی</button><button class="msg-action" onclick="shareMsg('+idx+')">اشتراک‌گذاری</button>';bubble.appendChild(actions);if(Array.isArray(m.sources)&&m.sources.length){const web=document.createElement('div');web.className='sources';web.innerHTML='<div class="web-badge">🌐 منابع وب</div><div class="sources-title">منابع استفاده‌شده:</div>';m.sources.forEach((src,i)=>{const a=document.createElement('a');a.className='source-link';a.href=src.url;a.target='_blank';a.rel='noopener noreferrer';a.textContent='['+(i+1)+'] '+src.title;web.appendChild(a)});bubble.appendChild(web)}}box.appendChild(row)});box.scrollTop=box.scrollHeight}
 function copyMsg(i,btn){const text=messages[i]?.content||'';const done=()=>{if(btn){const old=btn.textContent;btn.textContent='کپی شد ✓';setTimeout(()=>btn.textContent=old,1200)}};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(()=>{fallbackCopy(text);done()})}else{fallbackCopy(text);done()}}
 function fallbackCopy(text){const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove()}
 async function shareMsg(i){const text=messages[i]?.content||'';if(navigator.share){try{await navigator.share({title:"Taha's Helper Bot",text:text});return}catch(e){}}fallbackCopy(text);alert('متن پاسخ کپی شد؛ حالا می‌توانی آن را در هر برنامه‌ای به اشتراک بگذاری.')}
@@ -982,12 +1006,25 @@ function setBusy(v){
  const status=document.getElementById('status'); if(status&&!v)status.textContent='آماده';
 }
 async function saveLocalState(){try{if(messages.length) localStorage.setItem('meraj_last_chat',JSON.stringify({id:currentChatId,messages}));}catch(e){}}
+let buildTimer=null,buildStageIndex=0;
+function isCodeBuildRequest(text){return /\b(html|css|javascript|python|typescript|react|website|web app|game|project|code|program)\b|کد|برنامه|پروژه|سایت|بازی|اپلیکیشن|اچ.?تی.?ام.?ال/i.test(text||'')}
+function startBuildAnimation(text){
+ const card=document.getElementById('buildCard');if(!card)return;const pb=document.getElementById('buildPreviewBtn');if(pb){pb.disabled=true;pb.style.opacity='.55';pb.textContent='پیش‌نمایش پس از آماده‌شدن فعال می‌شود';pb.onclick=null;}
+ const t=(text||'').toLowerCase();let stages=['در حال طراحی ساختار پروژه…','در حال ساخت رابط کاربری…','در حال پیاده‌سازی منطق برنامه…','در حال اتصال فایل‌ها و وابستگی‌ها…','در حال بررسی و آماده‌سازی خروجی…'];
+ if(/game|بازی|فیزیک|physics|unity|godot/i.test(t))stages=['در حال طراحی ساختار بازی…','در حال ساخت صحنه‌ها و رابط کاربری…','در حال پیاده‌سازی کنترل‌ها و حرکت…','در حال ساخت فیزیک و برخوردها…','در حال اتصال سیستم امتیاز و رویدادها…','در حال بررسی و آماده‌سازی فایل‌ها…'];
+ if(/html|website|سایت|صفحه وب|اچ.?تی.?ام.?ال/i.test(t))stages=['در حال ساخت ساختار HTML…','در حال طراحی ظاهر و CSS…','در حال پیاده‌سازی تعاملات JavaScript…','در حال اتصال فایل‌ها…','در حال آماده‌سازی پیش‌نمایش…'];
+ buildStageIndex=0;document.getElementById('buildStage').textContent=stages[0];card.hidden=false;
+ clearInterval(buildTimer);buildTimer=setInterval(()=>{buildStageIndex=(buildStageIndex+1)%stages.length;document.getElementById('buildStage').textContent=stages[buildStageIndex]},2400);
+}
+function stopBuildAnimation(){clearInterval(buildTimer);buildTimer=null;const c=document.getElementById('buildCard');if(c)c.hidden=true}
+function openPreview(url){const old=document.getElementById('htmlPreview');if(old)old.remove();const wrap=document.createElement('div');wrap.id='htmlPreview';wrap.className='preview-wrap';const bar=document.createElement('div');bar.style.cssText='display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#17171c;color:#ddd;font-size:12px';bar.textContent='پیش‌نمایش HTML';const close=document.createElement('button');close.className='msg-action';close.textContent='بستن پیش‌نمایش';close.onclick=()=>wrap.remove();bar.appendChild(close);const frame=document.createElement('iframe');frame.src=url;frame.setAttribute('sandbox','allow-scripts');frame.loading='lazy';wrap.append(bar,frame);document.getElementById('messages').appendChild(wrap);wrap.scrollIntoView({behavior:'smooth',block:'start'});}
 async function sendMessage(){
  if(busy)return;
  const text=input.value.trim();
  const file=document.getElementById('file').files[0];
  if(!text && !file)return;
  setBusy(true);
+ if(isCodeBuildRequest(text))startBuildAnimation(text);
  let shownText=text;
  activeController=new AbortController();
  const timer=setTimeout(()=>activeController&&activeController.abort(),90000);
@@ -1003,13 +1040,13 @@ async function sendMessage(){
   addMessage('user',shownText);input.value='';input.style.height='auto';
   const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:currentChatId,messages}),signal:activeController.signal});
   const data=await r.json();if(!r.ok)throw new Error(data.error||'خطای سرور');
-  currentChatId=data.chat_id||currentChatId;addMessage('assistant',data.reply||'پاسخی دریافت نشد.',{sources:data.sources||[],file_url:data.file_url||'',file_name:data.file_name||''});
+  currentChatId=data.chat_id||currentChatId;addMessage('assistant',data.reply||'پاسخی دریافت نشد.',{sources:data.sources||[],file_url:data.file_url||'',file_name:data.file_name||'',code_bundle:data.code_bundle||null});if(data.code_bundle&&data.code_bundle.preview_url){const pb=document.getElementById('buildPreviewBtn');if(pb){pb.disabled=false;pb.style.opacity='1';pb.textContent='▶ باز کردن پیش‌نمایش HTML';pb.onclick=()=>openPreview(data.code_bundle.preview_url);}}
   document.getElementById('modelLabel').textContent=data.model||'';
   // History/local persistence are background tasks. They must never keep the composer locked.
   setBusy(false);
   loadHistory().catch(()=>{}); saveLocalState().catch(()=>{});
  }catch(e){if(e.name==='AbortError')addMessage('assistant','⏱️ پاسخ طول کشید و متوقف شد. دوباره ارسال کن.');else addMessage('assistant','❌ '+e.message)}
- finally{clearTimeout(timer);activeController=null;setBusy(false);input.focus()}
+ finally{clearTimeout(timer);activeController=null;stopBuildAnimation();setBusy(false);input.focus()}
 }
 async function generateImage(){
  if(busy)return;const p=document.getElementById('imagePrompt').value.trim();if(!p){document.getElementById('status').textContent='توضیح تصویر را بنویس.';return}
@@ -1219,6 +1256,7 @@ def chat():
                 if isinstance(m.get("video_prompt"), str): item["video_prompt"] = m.get("video_prompt")
                 if isinstance(m.get("file_url"), str): item["file_url"] = m.get("file_url")
                 if isinstance(m.get("file_name"), str): item["file_name"] = m.get("file_name")
+                if isinstance(m.get("code_bundle"), dict): item["code_bundle"] = m.get("code_bundle")
                 normalized.append(item)
         if not normalized:
             return jsonify(error="پیام قابل پردازش نیست."), 400
@@ -1236,14 +1274,18 @@ def chat():
         if file_requested:
             prepared.insert(0, {"role": "system", "content": requested_file_instruction(last_user)})
         reply = groq_chat(prepared, use_vision=has_image)
-        file_info = save_requested_file(last_user, reply) if file_requested else None
+        code_bundle = save_code_bundle(last_user, reply)
+        file_info = None
+        if code_bundle:
+            file_info = {"url": code_bundle["file_url"], "name": code_bundle["file_name"]}
         assistant_item = {"role": "assistant", "content": reply, "sources": sources}
         if file_info:
             assistant_item["file_url"] = file_info["url"]
             assistant_item["file_name"] = file_info["name"]
+            assistant_item["code_bundle"] = code_bundle
         normalized.append(assistant_item)
         save_chat(chat_id, normalized, make_title(normalized))
-        return jsonify(reply=reply, model=(VISION_MODEL if has_image and VISION_MODEL else MODEL), chat_id=chat_id, sources=sources, file_url=(file_info["url"] if file_info else None), file_name=(file_info["name"] if file_info else None))
+        return jsonify(reply=reply, model=(VISION_MODEL if has_image and VISION_MODEL else MODEL), chat_id=chat_id, sources=sources, file_url=(file_info["url"] if file_info else None), file_name=(file_info["name"] if file_info else None), code_bundle=code_bundle)
     except Exception as e:
         print("\n[CHAT ERROR]", repr(e))
         return jsonify(error=str(e)), 500
@@ -1281,6 +1323,22 @@ def generated_download(filename):
     if not safe.is_file():
         return jsonify(error="فایل پیدا نشد."), 404
     return send_file(safe, as_attachment=True, download_name=safe.name)
+
+
+@app.get("/generated-preview/<bundle_id>/<path:filename>")
+def generated_preview(bundle_id, filename):
+    base = (GENERATED_DIR / "code_bundles" / bundle_id).resolve()
+    target = (base / filename).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        return "Invalid preview path", 400
+    if not target.is_file():
+        return "Preview file not found", 404
+    response = send_file(target, mimetype=(mimetypes.guess_type(target.name)[0] or "text/html"))
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Security-Policy"] = "default-src 'self' data: blob:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; script-src 'self' 'unsafe-inline' https:; connect-src 'none'; frame-ancestors 'self'"
+    return response
 
 
 @app.get("/generated-download-file/<path:filename>")
