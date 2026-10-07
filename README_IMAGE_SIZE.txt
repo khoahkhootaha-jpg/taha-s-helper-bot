@@ -1,3 +1,3 @@
-Image generation size is fixed again at 768x768.
-The native Pollinations request sends width=768 and height=768.
-The OpenAI-compatible fallback sends size=768x768.
+Image generation dimensions are no longer hardcoded to 768x768.
+The Pollinations native request omits width and height, and the OpenAI-compatible fallback omits size.
+The selected image model/provider chooses its supported default dimensions. Provider-side maximums and model capabilities still apply.

@@ -34,6 +34,9 @@ POLLINATIONS_API_KEY = ""
 POLLINATIONS_IMAGE_MODEL = "gptimage"
 POLLINATIONS_VIDEO_MODEL = "veo"
 POLLINATIONS_VIDEO_MODELS = []
+VADOO_API_KEY = ""
+VADOO_API_URL = "https://viralapi.vadoo.tv/api/generate_video"
+VADOO_WEBHOOK_JOBS = {}
 GENERATED_DIR = BASE_DIR / "generated"
 GENERATED_DIR.mkdir(exist_ok=True)
 FILES_DIR = BASE_DIR / "generated_files"
@@ -45,7 +48,7 @@ app.config["JSON_AS_ASCII"] = False
 
 
 def setup():
-    global GEMINI_API_KEY, API_KEY, MODEL, VISION_MODEL, TRANSCRIBE_MODEL, POLLINATIONS_API_KEY, POLLINATIONS_IMAGE_MODEL, POLLINATIONS_VIDEO_MODEL, POLLINATIONS_VIDEO_MODELS
+    global GEMINI_API_KEY, API_KEY, MODEL, VISION_MODEL, TRANSCRIBE_MODEL, POLLINATIONS_API_KEY, POLLINATIONS_IMAGE_MODEL, POLLINATIONS_VIDEO_MODEL, POLLINATIONS_VIDEO_MODELS, VADOO_API_KEY
     print("\n" + "=" * 56)
     print("                    Taha's Helper Bot")
     print("=" * 56)
@@ -55,6 +58,7 @@ def setup():
     POLLINATIONS_API_KEY = os.environ.get("POLLINATIONS_API_KEY", "").strip()
     POLLINATIONS_IMAGE_MODEL = os.environ.get("POLLINATIONS_IMAGE_MODEL", "").strip()
     POLLINATIONS_VIDEO_MODEL = os.environ.get("POLLINATIONS_VIDEO_MODEL", "").strip()
+    VADOO_API_KEY = os.environ.get("VADOO_API_KEY", "").strip()
 
     if not API_KEY and sys.stdin.isatty():
         print("🔑 Groq API Key را همین‌جا در ترمینال وارد کن.")
@@ -102,6 +106,11 @@ def setup():
     else:
         print("🖼 مدل ساخت تصویر: Pollinations key وارد نشده")
         print("🎬 مدل ساخت ویدیو: Pollinations key وارد نشده")
+
+    if VADOO_API_KEY:
+        print("🎬 سرویس ویدیو: Vadoo AI (API) فعال است")
+    else:
+        print("🎬 سرویس ویدیو: Vadoo API Key تنظیم نشده است")
     return True
 
 def read_history():
@@ -669,16 +678,14 @@ def generate_image_file(prompt):
     print("\n[IMAGE GEN USER PROMPT]", repr(original_prompt))
     print("[IMAGE GEN CONTROLLED PROMPT]", repr(creative_prompt))
 
-    # 1) Use Pollinations' simple native image endpoint first.
-    # Keep a fixed 768x768 output for reliable generation on Render.
+    # 1) Use Pollinations' native image endpoint without forcing dimensions.
+    # The provider chooses the supported output dimensions for the selected model.
     try:
         encoded_prompt = quote(creative_prompt, safe="")
         r = requests.get(
             "https://gen.pollinations.ai/image/" + encoded_prompt,
             params={
                 "model": image_model,
-                "width": 768,
-                "height": 768,
                 "nologo": "true",
                 "seed": uuid.uuid4().int % 2147483647,
             },
@@ -696,14 +703,13 @@ def generate_image_file(prompt):
     except requests.RequestException as e:
         print("[IMAGE GEN GET CONNECTION ERROR]", repr(e))
 
-    # 2) OpenAI-compatible fallback. This endpoint expects a valid size string.
+    # 2) OpenAI-compatible fallback. Omit size so the provider/model default applies.
     post_headers = dict(headers)
     post_headers["Content-Type"] = "application/json"
     post_headers["Accept"] = "application/json"
     payload = {
         "model": image_model,
         "prompt": creative_prompt,
-        "size": "768x768",
         "n": 1,
         "response_format": "b64_json",
     }
@@ -770,128 +776,116 @@ def _save_video_bytes(content):
     return "/generated/" + name
 
 
-def generate_video_file(prompt, duration=4, aspect_ratio="16:9"):
-    """Generate a video using Pollinations' live video endpoint and model catalog."""
+def _find_video_url(value):
+    """Find a video URL in Vadoo webhook payloads with flexible field names."""
+    if isinstance(value, dict):
+        preferred = (
+            "video_url", "videoUrl", "download_url", "downloadUrl",
+            "url", "file_url", "fileUrl", "output_url", "outputUrl",
+        )
+        for key in preferred:
+            item = value.get(key)
+            if isinstance(item, str) and item.startswith(("http://", "https://")):
+                low = item.lower()
+                if any(x in low for x in (".mp4", "video", "download", "vadoo")) or key != "url":
+                    return item
+        for item in value.values():
+            found = _find_video_url(item)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_video_url(item)
+            if found:
+                return found
+    elif isinstance(value, str) and value.startswith(("http://", "https://")):
+        low = value.lower()
+        if ".mp4" in low or "video" in low:
+            return value
+    return None
+
+
+def _find_video_id(value):
+    """Find Vadoo's video id in a webhook payload."""
+    if isinstance(value, dict):
+        for key in ("vid", "video_id", "videoId", "id"):
+            item = value.get(key)
+            if isinstance(item, (str, int)) and str(item).strip():
+                return str(item).strip()
+        for item in value.values():
+            found = _find_video_id(item)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_video_id(item)
+            if found:
+                return found
+    return None
+
+
+def generate_video_file(prompt, duration=30, aspect_ratio="16:9"):
+    """Generate a video through Vadoo AI's Text-to-Video API.
+
+    Vadoo returns a video id first and sends the final download URL to the
+    webhook configured in the user's Vadoo profile. The browser polls our
+    status endpoint until that webhook arrives.
+    """
     prompt = (prompt or "").strip()
     if not prompt:
         raise RuntimeError("توضیح ویدیو خالی است.")
-    if not POLLINATIONS_API_KEY:
-        raise RuntimeError("برای ساخت ویدیو باید POLLINATIONS_API_KEY را در Environment Variables تنظیم کنی.")
+    if not VADOO_API_KEY:
+        raise RuntimeError("برای ساخت ویدیو باید VADOO_API_KEY را در Environment Variables تنظیم کنی.")
 
-    try:
-        duration = max(4, min(int(duration), 10))
-    except (TypeError, ValueError):
-        duration = 4
-    aspect_ratio = str(aspect_ratio or "16:9")
-    if aspect_ratio not in {"16:9", "9:16", "1:1"}:
-        aspect_ratio = "16:9"
+    # The Vadoo Text-to-Video API uses duration ranges such as 30-60.
+    duration_value = str(duration or "30-60")
+    if duration_value.isdigit():
+        seconds = int(duration_value)
+        duration_value = "30-60" if seconds <= 60 else "60-90"
+    elif duration_value not in {"30-60", "60-90", "90-120", "120-180"}:
+        duration_value = "30-60"
 
-    prompt = prompt[:4000]
-    creative_prompt = (
-        "Create a polished, imaginative short video based on the user's requested topic. "
-        "Use cinematic composition, natural motion, camera movement, lighting, environment, "
-        "depth and visual storytelling. Expand a short idea into a coherent scene, "
-        "but never contradict explicit user instructions, replace the requested main subject, "
-        "or add a different main subject. User request: " + prompt
-    )
-
-    headers = {
-        "Authorization": f"Bearer {POLLINATIONS_API_KEY}",
-        "Accept": "video/mp4, application/json, */*",
-        "Cache-Control": "no-cache",
-        "X-Taha-Request-ID": uuid.uuid4().hex,
+    payload = {
+        "topic": prompt[:4000],
+        "language": os.environ.get("VADOO_LANGUAGE", "English").strip() or "English",
+        "voice": os.environ.get("VADOO_VOICE", "Charlie").strip() or "Charlie",
+        "theme": os.environ.get("VADOO_THEME", "Hormozi_1").strip() or "Hormozi_1",
+        "duration": duration_value,
     }
 
-    # The key is the same one used by image generation. Start with the documented
-    # no-model request so model permissions/routing are handled by Pollinations.
-    discovered_video_models = POLLINATIONS_VIDEO_MODELS or _pollinations_video_models()
-    candidates = []
-    if POLLINATIONS_VIDEO_MODEL and POLLINATIONS_VIDEO_MODEL != "auto":
-        candidates.append(POLLINATIONS_VIDEO_MODEL)
-    candidates += [m for m in discovered_video_models if m not in candidates]
-    candidates.append("__auto__")
-    errors = []
+    headers = {
+        "X-API-KEY": VADOO_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    try:
+        r = requests.post(VADOO_API_URL, headers=headers, json=payload, timeout=60)
+    except requests.RequestException as e:
+        raise RuntimeError("اتصال به Vadoo برقرار نشد.") from e
 
-    for model in candidates:
-        # Use the SAME Pollinations key as image generation.
-        # Do not force a model here: Pollinations can route to an available video model.
-        params = {
-            "duration": duration,
-            "aspectRatio": aspect_ratio,
-            "key": POLLINATIONS_API_KEY,
-        }
-        if model != "__auto__":
-            params["model"] = model
-        try:
-            encoded = quote(creative_prompt, safe="")
-            r = requests.get(
-                "https://gen.pollinations.ai/video/" + encoded,
-                params=params,
-                headers=headers,
-                timeout=1200,
-            )
-            content_type = (r.headers.get("Content-Type") or "").lower()
+    if not r.ok:
+        detail = r.text[:800].replace("\n", " ").strip()
+        if r.status_code in (401, 403):
+            raise RuntimeError("کلید Vadoo نامعتبر است یا حساب شما دسترسی API ویدیو ندارد.")
+        raise RuntimeError(f"Vadoo خطا داد ({r.status_code}): {detail}")
 
-            if not r.ok:
-                detail = r.text[:1000].replace("\n", " ").strip()
-                errors.append(f"{model}: HTTP {r.status_code} {detail}")
-                # These normally mean the model itself is unavailable for this key;
-                # try the next discovered model instead of stopping immediately.
-                if r.status_code in (400, 404, 409, 422, 429, 501):
-                    continue
-                if r.status_code == 402:
-                    raise RuntimeError(f"POLLINATIONS_402:{detail}")
-                if r.status_code in (401, 403):
-                    raise RuntimeError("کلید Pollinations نامعتبر است یا دسترسی ساخت ویدیو برای آن فعال نیست.")
-                continue
+    try:
+        data = r.json()
+    except ValueError as e:
+        raise RuntimeError("Vadoo پاسخ JSON قابل خواندن برنگرداند.") from e
 
-            # Normal current API response: MP4 bytes.
-            if r.content and ("video/" in content_type or r.content[:4] == b"\x00\x00\x00\x18" or r.content[:4] == b"ftyp" or r.content[:3] == b"ID3"):
-                return _save_video_bytes(r.content)
+    vid = _find_video_id(data)
+    if not vid:
+        raise RuntimeError("Vadoo درخواست را پذیرفت ولی شناسه ویدیو را برنگرداند.")
 
-            # Some gateways return JSON containing a completed video URL.
-            if "json" in content_type or r.text.lstrip().startswith("{"):
-                try:
-                    data = r.json()
-                except ValueError:
-                    data = None
-                video_url = None
-                if isinstance(data, dict):
-                    for key_name in ("url", "video_url", "output"):
-                        if isinstance(data.get(key_name), str):
-                            video_url = data[key_name]
-                            break
-                    if not video_url and isinstance(data.get("data"), list) and data["data"]:
-                        first = data["data"][0]
-                        if isinstance(first, dict):
-                            for key_name in ("url", "video_url", "output"):
-                                if isinstance(first.get(key_name), str):
-                                    video_url = first[key_name]
-                                    break
-                if video_url:
-                    vr = requests.get(
-                        video_url,
-                        headers={"Authorization": f"Bearer {POLLINATIONS_API_KEY}"},
-                        timeout=300,
-                    )
-                    if vr.ok and vr.content:
-                        return _save_video_bytes(vr.content)
-                errors.append(f"{model}: پاسخ JSON بدون فایل ویدیو")
-                continue
-
-            if len(r.content) > 1024:
-                return _save_video_bytes(r.content)
-            errors.append(f"{model}: پاسخ خالی")
-
-        except requests.RequestException as e:
-            errors.append(f"{model}: {e}")
-            continue
-
-    short_errors = " | ".join(errors[:5])
-    raise RuntimeError(
-        "هیچ مدل ویدیوی در دسترس Pollinations نتوانست ویدیو بسازد. "
-        "مدل‌های موجود/دسترسی کلید را بررسی کن. " + short_errors
-    )
+    # If Vadoo ever returns a URL immediately, use it; otherwise wait for webhook.
+    immediate_url = _find_video_url(data)
+    VADOO_WEBHOOK_JOBS[vid] = {
+        "status": "completed" if immediate_url else "processing",
+        "url": immediate_url,
+        "created_at": time.time(),
+    }
+    return {"job_id": vid, "status": VADOO_WEBHOOK_JOBS[vid]["status"], "url": immediate_url}
 
 
 HTML_PAGE = r'''<!doctype html>
@@ -1065,16 +1059,38 @@ async function generateVideo(){
  if(busy)return;
  const p=document.getElementById('videoPrompt').value.trim();
  if(!p){document.getElementById('status').textContent='توضیح ویدیو را بنویس.';return}
- setBusy(true);document.getElementById('status').textContent='🎬 در حال ساخت ویدیو…';activeController=new AbortController();
- const timer=setTimeout(()=>activeController&&activeController.abort(),310000);
+ setBusy(true);document.getElementById('status').textContent='🎬 در حال ارسال درخواست به Vadoo AI…';activeController=new AbortController();
+ const timer=setTimeout(()=>activeController&&activeController.abort(),90000);
  try{
-  const r=await fetch('/api/generate-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:p,duration:4,aspect_ratio:'16:9'}),signal:activeController.signal});
+  const r=await fetch('/api/generate-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:p,duration:'30-60',aspect_ratio:'16:9'}),signal:activeController.signal});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d.error||('HTTP '+r.status+' - ساخت ویدیو ناموفق بود')));
-  messages.push({role:'assistant',content:'ویدیو ساخته شد\n\nپرامپت: '+p,video_url:d.url,video_prompt:p,sources:[]});
-  render();document.getElementById('videoPrompt').value='';toggleVideoPanel();
+  if(d.status==='completed'&&d.url){
+   messages.push({role:'assistant',content:'ویدیو ساخته شد\n\nپرامپت: '+p,video_url:d.url,video_prompt:p,sources:[]});
+   render();
+  }else{
+   messages.push({role:'assistant',content:'🎬 ویدیو در Vadoo در حال ساخته‌شدن است…\n\nپرامپت: '+p,video_prompt:p,sources:[],video_job_id:d.job_id});
+   const pendingIndex=messages.length-1;render();
+   document.getElementById('status').textContent='🎬 Vadoo در حال ساخت ویدیو است…';
+   const started=Date.now();
+   let completed=false;
+   while(Date.now()-started<12*60*1000){
+    await new Promise(resolve=>setTimeout(resolve,5000));
+    const sr=await fetch('/api/video-status/'+encodeURIComponent(d.job_id),{cache:'no-store'});
+    const sd=await sr.json().catch(()=>({}));
+    if(sd.status==='completed'&&sd.url){
+     messages[pendingIndex].content='ویدیو ساخته شد\n\nپرامپت: '+p;
+     messages[pendingIndex].video_url=sd.url;
+     delete messages[pendingIndex].video_job_id;
+     render();completed=true;break;
+    }
+    document.getElementById('status').textContent='🎬 Vadoo در حال ساخت ویدیو است…';
+   }
+   if(!completed){messages[pendingIndex].content='⏳ درخواست ویدیو ثبت شد، اما Vadoo هنوز لینک نهایی را نفرستاده است. بعداً دوباره چت را باز کن.';render();}
+  }
+  document.getElementById('videoPrompt').value='';toggleVideoPanel();
   if(!currentChatId)currentChatId=crypto.randomUUID?crypto.randomUUID():String(Date.now());
   setBusy(false);fetch('/api/save-image',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:currentChatId,messages})}).catch(()=>{});loadHistory().catch(()=>{});
- }catch(e){document.getElementById('status').textContent=e.name==='AbortError'?'ساخت ویدیو زمان زیادی برد. دوباره امتحان کن.':'خطا در ساخت ویدیو: '+e.message}
+ }catch(e){document.getElementById('status').textContent=e.name==='AbortError'?'ارسال درخواست ویدیو زمان زیادی برد. دوباره امتحان کن.':'خطا در ساخت ویدیو: '+e.message}
  finally{clearTimeout(timer);activeController=null;setBusy(false);input.focus()}
 }
 
@@ -1382,27 +1398,116 @@ def generate_image():
         return jsonify(error=str(e)), 500
 
 
-@app.post("/api/generate-video")
-def generate_video():
-    data = request.get_json(silent=True) or {}
-    prompt = (data.get("prompt") or "").strip()
-    duration = data.get("duration", 4)
-    aspect_ratio = data.get("aspect_ratio", "16:9")
+def _find_video_url(value):
+    """Find a video URL in Vadoo webhook payloads with flexible field names."""
+    if isinstance(value, dict):
+        preferred = (
+            "video_url", "videoUrl", "download_url", "downloadUrl",
+            "url", "file_url", "fileUrl", "output_url", "outputUrl",
+        )
+        for key in preferred:
+            item = value.get(key)
+            if isinstance(item, str) and item.startswith(("http://", "https://")):
+                low = item.lower()
+                if any(x in low for x in (".mp4", "video", "download", "vadoo")) or key != "url":
+                    return item
+        for item in value.values():
+            found = _find_video_url(item)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_video_url(item)
+            if found:
+                return found
+    elif isinstance(value, str) and value.startswith(("http://", "https://")):
+        low = value.lower()
+        if ".mp4" in low or "video" in low:
+            return value
+    return None
+
+
+def _find_video_id(value):
+    """Find Vadoo's video id in a webhook payload."""
+    if isinstance(value, dict):
+        for key in ("vid", "video_id", "videoId", "id"):
+            item = value.get(key)
+            if isinstance(item, (str, int)) and str(item).strip():
+                return str(item).strip()
+        for item in value.values():
+            found = _find_video_id(item)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_video_id(item)
+            if found:
+                return found
+    return None
+
+
+def generate_video_file(prompt, duration=30, aspect_ratio="16:9"):
+    """Generate a video through Vadoo AI's Text-to-Video API.
+
+    Vadoo returns a video id first and sends the final download URL to the
+    webhook configured in the user's Vadoo profile. The browser polls our
+    status endpoint until that webhook arrives.
+    """
+    prompt = (prompt or "").strip()
     if not prompt:
-        return jsonify(error="توضیح ویدیو را بنویس."), 400
+        raise RuntimeError("توضیح ویدیو خالی است.")
+    if not VADOO_API_KEY:
+        raise RuntimeError("برای ساخت ویدیو باید VADOO_API_KEY را در Environment Variables تنظیم کنی.")
+
+    # The Vadoo Text-to-Video API uses duration ranges such as 30-60.
+    duration_value = str(duration or "30-60")
+    if duration_value.isdigit():
+        seconds = int(duration_value)
+        duration_value = "30-60" if seconds <= 60 else "60-90"
+    elif duration_value not in {"30-60", "60-90", "90-120", "120-180"}:
+        duration_value = "30-60"
+
+    payload = {
+        "topic": prompt[:4000],
+        "language": os.environ.get("VADOO_LANGUAGE", "English").strip() or "English",
+        "voice": os.environ.get("VADOO_VOICE", "Charlie").strip() or "Charlie",
+        "theme": os.environ.get("VADOO_THEME", "Hormozi_1").strip() or "Hormozi_1",
+        "duration": duration_value,
+    }
+
+    headers = {
+        "X-API-KEY": VADOO_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
     try:
-        url = generate_video_file(prompt, duration=duration, aspect_ratio=aspect_ratio)
-        return jsonify(ok=True, url=url, provider=IMAGE_GEN_PROVIDER, model=POLLINATIONS_VIDEO_MODEL)
-    except RuntimeError as e:
-        msg = str(e)
-        if msg.startswith("POLLINATIONS_402:"):
-            return jsonify(error="ساخت ویدیو انجام نشد: حساب Pollinations اعتبار کافی ندارد یا دسترسی API فعال نیست."), 402
-        return jsonify(error=msg), 500
+        r = requests.post(VADOO_API_URL, headers=headers, json=payload, timeout=60)
     except requests.RequestException as e:
-        return jsonify(error="اتصال به سرویس ساخت ویدیو برقرار نشد. دوباره تلاش کن."), 502
-    except Exception as e:
-        print("[VIDEO GEN ERROR]", repr(e))
-        return jsonify(error=str(e)), 500
+        raise RuntimeError("اتصال به Vadoo برقرار نشد.") from e
+
+    if not r.ok:
+        detail = r.text[:800].replace("\n", " ").strip()
+        if r.status_code in (401, 403):
+            raise RuntimeError("کلید Vadoo نامعتبر است یا حساب شما دسترسی API ویدیو ندارد.")
+        raise RuntimeError(f"Vadoo خطا داد ({r.status_code}): {detail}")
+
+    try:
+        data = r.json()
+    except ValueError as e:
+        raise RuntimeError("Vadoo پاسخ JSON قابل خواندن برنگرداند.") from e
+
+    vid = _find_video_id(data)
+    if not vid:
+        raise RuntimeError("Vadoo درخواست را پذیرفت ولی شناسه ویدیو را برنگرداند.")
+
+    # If Vadoo ever returns a URL immediately, use it; otherwise wait for webhook.
+    immediate_url = _find_video_url(data)
+    VADOO_WEBHOOK_JOBS[vid] = {
+        "status": "completed" if immediate_url else "processing",
+        "url": immediate_url,
+        "created_at": time.time(),
+    }
+    return {"job_id": vid, "status": VADOO_WEBHOOK_JOBS[vid]["status"], "url": immediate_url}
 
 
 @app.post("/api/save-image")
