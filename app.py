@@ -888,6 +888,59 @@ def generate_video_file(prompt, duration=30, aspect_ratio="16:9"):
     return {"job_id": vid, "status": VADOO_WEBHOOK_JOBS[vid]["status"], "url": immediate_url}
 
 
+@app.post("/api/generate-video")
+def api_generate_video():
+    """Start a Vadoo text-to-video job."""
+    data = request.get_json(silent=True) or {}
+    prompt = str(data.get("prompt") or "").strip()
+    duration = data.get("duration", "30-60")
+    aspect_ratio = data.get("aspect_ratio", "16:9")
+    if not prompt:
+        return jsonify(error="توضیح ویدیو خالی است."), 400
+    try:
+        result = generate_video_file(prompt, duration=duration, aspect_ratio=aspect_ratio)
+        return jsonify(result), 200
+    except Exception as e:
+        print(f"🎬 Vadoo generate error: {e}", flush=True)
+        return jsonify(error=str(e)), 500
+
+
+@app.get("/api/video-status/<job_id>")
+def api_video_status(job_id):
+    job = VADOO_WEBHOOK_JOBS.get(str(job_id))
+    if not job:
+        return jsonify(status="processing", url=None), 200
+    return jsonify(
+        status=job.get("status", "processing"),
+        url=job.get("url"),
+    ), 200
+
+
+@app.post("/api/vadoo/webhook")
+def api_vadoo_webhook():
+    """Receive Vadoo's completion webhook and attach the final video URL."""
+    data = request.get_json(silent=True)
+    if data is None:
+        raw = request.get_data(as_text=True)
+        try:
+            data = json.loads(raw) if raw else {}
+        except Exception:
+            data = {"raw": raw}
+
+    print(f"🎬 Vadoo webhook received: {json.dumps(data, ensure_ascii=False)[:2000]}", flush=True)
+    vid = _find_video_id(data)
+    url = _find_video_url(data)
+
+    if vid:
+        VADOO_WEBHOOK_JOBS[str(vid)] = {
+            "status": "completed" if url else "processing",
+            "url": url,
+            "created_at": time.time(),
+        }
+
+    return jsonify(ok=True, vid=vid, url=url), 200
+
+
 HTML_PAGE = r'''<!doctype html>
 <html lang="fa" dir="rtl">
 <head>
