@@ -34,13 +34,9 @@ POLLINATIONS_API_KEY = ""
 POLLINATIONS_IMAGE_MODEL = "gptimage"
 POLLINATIONS_VIDEO_MODEL = "veo"
 POLLINATIONS_VIDEO_MODELS = []
-VADOO_API_KEY = ""
-VADOO_API_URL = "https://viralapi.vadoo.tv/api/generate_video"
-VADOO_WEBHOOK_JOBS = {}
-MINIMAX_API_KEY = ""
-MINIMAX_API_BASE = "https://api.minimax.io"
-MINIMAX_VIDEO_MODEL = "MiniMax-H3"
-MINIMAX_VIDEO_RESOLUTION = "768P"
+MAGIC_HOUR_API_KEY = ""
+MAGIC_HOUR_API_BASE = "https://api.magichour.ai"
+MAGIC_HOUR_JOBS = {}
 GENERATED_DIR = BASE_DIR / "generated"
 GENERATED_DIR.mkdir(exist_ok=True)
 FILES_DIR = BASE_DIR / "generated_files"
@@ -52,7 +48,7 @@ app.config["JSON_AS_ASCII"] = False
 
 
 def setup():
-    global GEMINI_API_KEY, API_KEY, MODEL, VISION_MODEL, TRANSCRIBE_MODEL, POLLINATIONS_API_KEY, POLLINATIONS_IMAGE_MODEL, POLLINATIONS_VIDEO_MODEL, POLLINATIONS_VIDEO_MODELS, VADOO_API_KEY, MINIMAX_API_KEY, MINIMAX_API_BASE, MINIMAX_VIDEO_MODEL, MINIMAX_VIDEO_RESOLUTION
+    global GEMINI_API_KEY, API_KEY, MODEL, VISION_MODEL, TRANSCRIBE_MODEL, POLLINATIONS_API_KEY, POLLINATIONS_IMAGE_MODEL, POLLINATIONS_VIDEO_MODEL, POLLINATIONS_VIDEO_MODELS, MAGIC_HOUR_API_KEY
     print("\n" + "=" * 56)
     print("                    Taha's Helper Bot")
     print("=" * 56)
@@ -62,11 +58,7 @@ def setup():
     POLLINATIONS_API_KEY = os.environ.get("POLLINATIONS_API_KEY", "").strip()
     POLLINATIONS_IMAGE_MODEL = os.environ.get("POLLINATIONS_IMAGE_MODEL", "").strip()
     POLLINATIONS_VIDEO_MODEL = os.environ.get("POLLINATIONS_VIDEO_MODEL", "").strip()
-    VADOO_API_KEY = os.environ.get("VADOO_API_KEY", "").strip()
-    MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY", "").strip()
-    MINIMAX_API_BASE = os.environ.get("MINIMAX_API_BASE", "https://api.minimax.io").strip().rstrip("/")
-    MINIMAX_VIDEO_MODEL = os.environ.get("MINIMAX_VIDEO_MODEL", "MiniMax-H3").strip() or "MiniMax-H3"
-    MINIMAX_VIDEO_RESOLUTION = os.environ.get("MINIMAX_VIDEO_RESOLUTION", "768P").strip() or "768P"
+    MAGIC_HOUR_API_KEY = os.environ.get("MAGIC_HOUR_API_KEY", "").strip()
 
     if not API_KEY and sys.stdin.isatty():
         print("🔑 Groq API Key را همین‌جا در ترمینال وارد کن.")
@@ -115,10 +107,10 @@ def setup():
         print("🖼 مدل ساخت تصویر: Pollinations key وارد نشده")
         print("🎬 مدل ساخت ویدیو: Pollinations key وارد نشده")
 
-    if MINIMAX_API_KEY:
-        print(f"🎬 سرویس ویدیو: MiniMax ({MINIMAX_VIDEO_MODEL}, {MINIMAX_VIDEO_RESOLUTION}) فعال است")
+    if MAGIC_HOUR_API_KEY:
+        print("🎬 سرویس ویدیو: Magic Hour API فعال است")
     else:
-        print("🎬 سرویس ویدیو: MINIMAX_API_KEY تنظیم نشده است")
+        print("🎬 سرویس ویدیو: MAGIC_HOUR_API_KEY تنظیم نشده است")
     return True
 
 def read_history():
@@ -833,73 +825,66 @@ def _find_video_id(value):
 
 
 def generate_video_file(prompt, duration=5, aspect_ratio="16:9"):
-    """Start a MiniMax H3 text-to-video task; status is checked asynchronously."""
+    """Submit a text-to-video generation job to Magic Hour."""
     prompt = (prompt or "").strip()
     if not prompt:
         raise RuntimeError("توضیح ویدیو خالی است.")
-    if not MINIMAX_API_KEY:
-        raise RuntimeError("برای ساخت ویدیو، مقدار MINIMAX_API_KEY را در Environment Variables تنظیم کن.")
+    if not MAGIC_HOUR_API_KEY:
+        raise RuntimeError("برای ساخت ویدیو باید MAGIC_HOUR_API_KEY را در Environment Variables تنظیم کنی.")
 
     try:
-        seconds = int(duration)
+        end_seconds = float(duration or 5)
     except (TypeError, ValueError):
-        seconds = 5
-    seconds = max(4, min(15, seconds))
-    ratio = str(aspect_ratio or "16:9").strip()
-    allowed_ratios = {"16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"}
-    if ratio not in allowed_ratios:
-        ratio = "16:9"
-
+        end_seconds = 5.0
+    end_seconds = min(max(end_seconds, 3.0), 10.0)
+    ratio = aspect_ratio if aspect_ratio in {"16:9", "9:16", "1:1"} else "16:9"
     payload = {
-        "model": MINIMAX_VIDEO_MODEL,
-        "content": [{"type": "text", "text": prompt[:7000]}],
-        "duration": seconds,
-        "resolution": MINIMAX_VIDEO_RESOLUTION,
-        "ratio": ratio,
+        "name": "Taha's Helper Bot video",
+        "end_seconds": end_seconds,
+        "aspect_ratio": ratio,
+        "style": {"prompt": prompt[:4000]},
+        "model": "ltx-2.5",
+        "resolution": "480p",
+        "audio": True,
     }
     headers = {
-        "Authorization": f"Bearer {MINIMAX_API_KEY}",
+        "Authorization": f"Bearer {MAGIC_HOUR_API_KEY}",
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
     try:
-        r = requests.post(f"{MINIMAX_API_BASE}/v2/video_generation",
-                          headers=headers, json=payload, timeout=60)
+        r = requests.post(f"{MAGIC_HOUR_API_BASE}/v1/text-to-video", headers=headers, json=payload, timeout=60)
     except requests.RequestException as e:
-        raise RuntimeError("اتصال به MiniMax برقرار نشد؛ وضعیت شبکه و کلید API را بررسی کن.") from e
-
+        raise RuntimeError("اتصال به Magic Hour برقرار نشد.") from e
     if not r.ok:
-        detail = r.text[:700].replace("\\n", " ").strip()
+        detail = r.text[:800].replace("\\n", " ").strip()
         if r.status_code in (401, 403):
-            raise RuntimeError("کلید MiniMax نامعتبر است یا حساب API به ساخت ویدیو دسترسی ندارد.")
-        raise RuntimeError(f"MiniMax خطا داد ({r.status_code}): {detail}")
-
+            raise RuntimeError("کلید Magic Hour نامعتبر است یا دسترسی API ندارد.")
+        if r.status_code == 402:
+            raise RuntimeError("اعتبار Magic Hour کافی نیست؛ موجودی حساب را بررسی کن.")
+        raise RuntimeError(f"Magic Hour خطا داد ({r.status_code}): {detail}")
     try:
         data = r.json()
     except ValueError as e:
-        raise RuntimeError("MiniMax پاسخ JSON قابل خواندن برنگرداند.") from e
+        raise RuntimeError("Magic Hour پاسخ JSON قابل خواندن برنگرداند.") from e
 
-    task_id = data.get("task_id") or (data.get("task") or {}).get("task_id")
-    if not task_id:
-        base_resp = data.get("base_resp") or {}
-        detail = base_resp.get("status_msg") or str(data)[:400]
-        raise RuntimeError(f"MiniMax شناسه کار را برنگرداند: {detail}")
+    job_id = data.get("id") or data.get("project_id") or data.get("projectId")
+    url = _find_video_url(data)
+    if not job_id and not url:
+        raise RuntimeError("Magic Hour درخواست را پذیرفت اما شناسهٔ پروژه برنگرداند.")
+    if url:
+        return {"job_id": str(job_id or uuid.uuid4().hex), "status": "completed", "url": url}
+    job_id = str(job_id)
+    MAGIC_HOUR_JOBS[job_id] = {"status": "processing", "url": None, "created_at": time.time()}
+    return {"job_id": job_id, "status": "processing", "url": None}
 
-    VADOO_WEBHOOK_JOBS[str(task_id)] = {
-        "provider": "minimax",
-        "task_id": str(task_id),
-        "status": "processing",
-        "url": None,
-        "created_at": time.time(),
-    }
-    return {"job_id": str(task_id), "status": "processing", "url": None}
 
 @app.post("/api/generate-video")
 def api_generate_video():
-    """Start a Vadoo text-to-video job."""
+    """Start a Magic Hour text-to-video job."""
     data = request.get_json(silent=True) or {}
     prompt = str(data.get("prompt") or "").strip()
-    duration = data.get("duration", 5)
+    duration = data.get("duration", "30-60")
     aspect_ratio = data.get("aspect_ratio", "16:9")
     if not prompt:
         return jsonify(error="توضیح ویدیو خالی است."), 400
@@ -907,68 +892,37 @@ def api_generate_video():
         result = generate_video_file(prompt, duration=duration, aspect_ratio=aspect_ratio)
         return jsonify(result), 200
     except Exception as e:
-        print(f"🎬 MiniMax generate error: {e}", flush=True)
+        print(f"🎬 Magic Hour generate error: {e}", flush=True)
         return jsonify(error=str(e)), 500
 
 
 @app.get("/api/video-status/<job_id>")
 def api_video_status(job_id):
-    job = VADOO_WEBHOOK_JOBS.get(str(job_id))
-    if not job:
-        return jsonify(status="processing", url=None), 200
-
-    if job.get("provider") == "minimax" and job.get("status") != "completed":
+    """Poll Magic Hour project status and return its downloadable video URL when ready."""
+    if not MAGIC_HOUR_API_KEY:
+        return jsonify(status="error", url=None, error="MAGIC_HOUR_API_KEY تنظیم نشده است."), 500
+    headers = {"Authorization": f"Bearer {MAGIC_HOUR_API_KEY}", "Accept": "application/json"}
+    last_error = None
+    for endpoint in (f"/v1/text-to-video/{quote(str(job_id), safe='')}", f"/v1/videos/{quote(str(job_id), safe='')}"):
         try:
-            r = requests.get(
-                f"{MINIMAX_API_BASE}/v2/query/video_generation/{quote(str(job.get('task_id') or job_id), safe='')}",
-                headers={"Authorization": f"Bearer {MINIMAX_API_KEY}", "Accept": "application/json"},
-                timeout=20,
-            )
+            r = requests.get(f"{MAGIC_HOUR_API_BASE}{endpoint}", headers=headers, timeout=25)
+            if r.status_code == 404:
+                continue
             if not r.ok:
-                return jsonify(status="processing", url=None), 200
+                last_error = f"Magic Hour status HTTP {r.status_code}: {r.text[:300]}"
+                continue
             data = r.json()
-            task = data.get("task") if isinstance(data.get("task"), dict) else data
-            status = str(task.get("status") or "processing").lower()
-            if status == "succeeded":
-                content = task.get("content") or {}
-                url = content.get("url") if isinstance(content, dict) else None
-                if url:
-                    job.update(status="completed", url=url)
-            elif status in ("failed", "cancelled"):
-                job.update(status="failed", error=str(task.get("error") or status))
-        except (requests.RequestException, ValueError, TypeError) as e:
-            print("MiniMax status check error:", repr(e), flush=True)
-
-    return jsonify(
-        status=job.get("status", "processing"),
-        url=job.get("url"),
-        error=job.get("error"),
-    ), 200
-
-
-@app.post("/api/vadoo/webhook")
-def api_vadoo_webhook():
-    """Receive Vadoo's completion webhook and attach the final video URL."""
-    data = request.get_json(silent=True)
-    if data is None:
-        raw = request.get_data(as_text=True)
-        try:
-            data = json.loads(raw) if raw else {}
-        except Exception:
-            data = {"raw": raw}
-
-    print(f"🎬 Vadoo webhook received: {json.dumps(data, ensure_ascii=False)[:2000]}", flush=True)
-    vid = _find_video_id(data)
-    url = _find_video_url(data)
-
-    if vid:
-        VADOO_WEBHOOK_JOBS[str(vid)] = {
-            "status": "completed" if url else "processing",
-            "url": url,
-            "created_at": time.time(),
-        }
-
-    return jsonify(ok=True, vid=vid, url=url), 200
+            url = _find_video_url(data)
+            status_value = str(data.get("status") or data.get("state") or "").lower()
+            if url and status_value not in {"failed", "error", "canceled", "cancelled"}:
+                return jsonify(status="completed", url=url), 200
+            if status_value in {"failed", "error", "canceled", "cancelled"}:
+                return jsonify(status="error", url=None, error="ساخت ویدیو در Magic Hour ناموفق شد."), 200
+            return jsonify(status="processing", url=None), 200
+        except (requests.RequestException, ValueError) as e:
+            last_error = str(e)
+    print(f"Magic Hour status lookup failed for {job_id}: {last_error}", flush=True)
+    return jsonify(status="processing", url=None), 200
 
 
 HTML_PAGE = r'''<!doctype html>
@@ -1142,7 +1096,7 @@ async function generateVideo(){
  if(busy)return;
  const p=document.getElementById('videoPrompt').value.trim();
  if(!p){document.getElementById('status').textContent='توضیح ویدیو را بنویس.';return}
- setBusy(true);document.getElementById('status').textContent='🎬 در حال ارسال درخواست به MiniMax…';activeController=new AbortController();
+ setBusy(true);document.getElementById('status').textContent='🎬 در حال ارسال درخواست به Magic Hour…';activeController=new AbortController();
  const timer=setTimeout(()=>activeController&&activeController.abort(),90000);
  try{
   const r=await fetch('/api/generate-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:p,duration:5,aspect_ratio:'16:9'}),signal:activeController.signal});
@@ -1151,25 +1105,24 @@ async function generateVideo(){
    messages.push({role:'assistant',content:'ویدیو ساخته شد\n\nپرامپت: '+p,video_url:d.url,video_prompt:p,sources:[]});
    render();
   }else{
-   messages.push({role:'assistant',content:'🎬 ویدیو در MiniMax در حال ساخته‌شدن است…\n\nپرامپت: '+p,video_prompt:p,sources:[],video_job_id:d.job_id});
+   messages.push({role:'assistant',content:'🎬 ویدیو در Magic Hour در حال ساخته‌شدن است…\n\nپرامپت: '+p,video_prompt:p,sources:[],video_job_id:d.job_id});
    const pendingIndex=messages.length-1;render();
-   document.getElementById('status').textContent='🎬 MiniMax در حال ساخت ویدیو است…';
+   document.getElementById('status').textContent='🎬 Magic Hour در حال ساخت ویدیو است…';
    const started=Date.now();
    let completed=false;
    while(Date.now()-started<12*60*1000){
     await new Promise(resolve=>setTimeout(resolve,5000));
     const sr=await fetch('/api/video-status/'+encodeURIComponent(d.job_id),{cache:'no-store'});
     const sd=await sr.json().catch(()=>({}));
-    if(sd.status==='failed'){throw new Error(sd.error||'ساخت ویدیو توسط MiniMax ناموفق شد')}
-     if(sd.status==='completed'&&sd.url){
+    if(sd.status==='completed'&&sd.url){
      messages[pendingIndex].content='ویدیو ساخته شد\n\nپرامپت: '+p;
      messages[pendingIndex].video_url=sd.url;
      delete messages[pendingIndex].video_job_id;
      render();completed=true;break;
     }
-    document.getElementById('status').textContent='🎬 MiniMax در حال ساخت ویدیو است…';
+    document.getElementById('status').textContent='🎬 Magic Hour در حال ساخت ویدیو است…';
    }
-   if(!completed){messages[pendingIndex].content='⏳ درخواست ویدیو ثبت شد، اما MiniMax هنوز لینک نهایی را نفرستاده است. بعداً دوباره چت را باز کن.';render();}
+   if(!completed){messages[pendingIndex].content='⏳ درخواست ویدیو ثبت شد، اما Vadoo هنوز لینک نهایی را نفرستاده است. بعداً دوباره چت را باز کن.';render();}
   }
   document.getElementById('videoPrompt').value='';toggleVideoPanel();
   if(!currentChatId)currentChatId=crypto.randomUUID?crypto.randomUUID():String(Date.now());
@@ -1530,67 +1483,69 @@ def _find_video_id(value):
     return None
 
 
-def generate_video_file(prompt, duration=5, aspect_ratio="16:9"):
-    """Start a MiniMax H3 text-to-video task; status is checked asynchronously."""
+def generate_video_file(prompt, duration=30, aspect_ratio="16:9"):
+    """Generate a video through Vadoo AI's Text-to-Video API.
+
+    Vadoo returns a video id first and sends the final download URL to the
+    webhook configured in the user's Vadoo profile. The browser polls our
+    status endpoint until that webhook arrives.
+    """
     prompt = (prompt or "").strip()
     if not prompt:
         raise RuntimeError("توضیح ویدیو خالی است.")
-    if not MINIMAX_API_KEY:
-        raise RuntimeError("برای ساخت ویدیو، مقدار MINIMAX_API_KEY را در Environment Variables تنظیم کن.")
+    if not VADOO_API_KEY:
+        raise RuntimeError("برای ساخت ویدیو باید VADOO_API_KEY را در Environment Variables تنظیم کنی.")
 
-    try:
-        seconds = int(duration)
-    except (TypeError, ValueError):
-        seconds = 5
-    seconds = max(4, min(15, seconds))
-    ratio = str(aspect_ratio or "16:9").strip()
-    allowed_ratios = {"16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"}
-    if ratio not in allowed_ratios:
-        ratio = "16:9"
+    # The Vadoo Text-to-Video API uses duration ranges such as 30-60.
+    duration_value = str(duration or "30-60")
+    if duration_value.isdigit():
+        seconds = int(duration_value)
+        duration_value = "30-60" if seconds <= 60 else "60-90"
+    elif duration_value not in {"30-60", "60-90", "90-120", "120-180"}:
+        duration_value = "30-60"
 
     payload = {
-        "model": MINIMAX_VIDEO_MODEL,
-        "content": [{"type": "text", "text": prompt[:7000]}],
-        "duration": seconds,
-        "resolution": MINIMAX_VIDEO_RESOLUTION,
-        "ratio": ratio,
+        "topic": prompt[:4000],
+        "language": os.environ.get("VADOO_LANGUAGE", "English").strip() or "English",
+        "voice": os.environ.get("VADOO_VOICE", "Charlie").strip() or "Charlie",
+        "theme": os.environ.get("VADOO_THEME", "Hormozi_1").strip() or "Hormozi_1",
+        "duration": duration_value,
     }
+
     headers = {
-        "Authorization": f"Bearer {MINIMAX_API_KEY}",
+        "X-API-KEY": VADOO_API_KEY,
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
     try:
-        r = requests.post(f"{MINIMAX_API_BASE}/v2/video_generation",
-                          headers=headers, json=payload, timeout=60)
+        r = requests.post(VADOO_API_URL, headers=headers, json=payload, timeout=60)
     except requests.RequestException as e:
-        raise RuntimeError("اتصال به MiniMax برقرار نشد؛ وضعیت شبکه و کلید API را بررسی کن.") from e
+        raise RuntimeError("اتصال به Vadoo برقرار نشد.") from e
 
     if not r.ok:
-        detail = r.text[:700].replace("\\n", " ").strip()
+        detail = r.text[:800].replace("\n", " ").strip()
         if r.status_code in (401, 403):
-            raise RuntimeError("کلید MiniMax نامعتبر است یا حساب API به ساخت ویدیو دسترسی ندارد.")
-        raise RuntimeError(f"MiniMax خطا داد ({r.status_code}): {detail}")
+            raise RuntimeError("کلید Vadoo نامعتبر است یا حساب شما دسترسی API ویدیو ندارد.")
+        raise RuntimeError(f"Vadoo خطا داد ({r.status_code}): {detail}")
 
     try:
         data = r.json()
     except ValueError as e:
-        raise RuntimeError("MiniMax پاسخ JSON قابل خواندن برنگرداند.") from e
+        raise RuntimeError("Vadoo پاسخ JSON قابل خواندن برنگرداند.") from e
 
-    task_id = data.get("task_id") or (data.get("task") or {}).get("task_id")
-    if not task_id:
-        base_resp = data.get("base_resp") or {}
-        detail = base_resp.get("status_msg") or str(data)[:400]
-        raise RuntimeError(f"MiniMax شناسه کار را برنگرداند: {detail}")
+    vid = _find_video_id(data)
+    if not vid:
+        raise RuntimeError("Vadoo درخواست را پذیرفت ولی شناسه ویدیو را برنگرداند.")
 
-    VADOO_WEBHOOK_JOBS[str(task_id)] = {
-        "provider": "minimax",
-        "task_id": str(task_id),
-        "status": "processing",
-        "url": None,
+    # If Vadoo ever returns a URL immediately, use it; otherwise wait for webhook.
+    immediate_url = _find_video_url(data)
+    VADOO_WEBHOOK_JOBS[vid] = {
+        "status": "completed" if immediate_url else "processing",
+        "url": immediate_url,
         "created_at": time.time(),
     }
-    return {"job_id": str(task_id), "status": "processing", "url": None}
+    return {"job_id": vid, "status": VADOO_WEBHOOK_JOBS[vid]["status"], "url": immediate_url}
+
 
 @app.post("/api/save-image")
 def save_generated_image():

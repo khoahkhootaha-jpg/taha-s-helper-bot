@@ -16,11 +16,5 @@ services:
         sync: false
       - key: POLLINATIONS_API_KEY
         sync: false
-      - key: MINIMAX_API_KEY
+      - key: MAGIC_HOUR_API_KEY
         sync: false
-      - key: MINIMAX_API_BASE
-        value: https://api.minimax.io
-      - key: MINIMAX_VIDEO_MODEL
-        value: MiniMax-H3
-      - key: MINIMAX_VIDEO_RESOLUTION
-        value: 768P
