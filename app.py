@@ -1483,68 +1483,59 @@ def _find_video_id(value):
     return None
 
 
-def generate_video_file(prompt, duration=30, aspect_ratio="16:9"):
-    """Generate a video through Vadoo AI's Text-to-Video API.
-
-    Vadoo returns a video id first and sends the final download URL to the
-    webhook configured in the user's Vadoo profile. The browser polls our
-    status endpoint until that webhook arrives.
-    """
+def generate_video_file(prompt, duration=5, aspect_ratio="16:9"):
+    """Submit a text-to-video generation job to Magic Hour."""
     prompt = (prompt or "").strip()
     if not prompt:
         raise RuntimeError("توضیح ویدیو خالی است.")
-    if not VADOO_API_KEY:
-        raise RuntimeError("برای ساخت ویدیو باید VADOO_API_KEY را در Environment Variables تنظیم کنی.")
+    if not MAGIC_HOUR_API_KEY:
+        raise RuntimeError("برای ساخت ویدیو باید MAGIC_HOUR_API_KEY را در Environment Variables تنظیم کنی.")
 
-    # The Vadoo Text-to-Video API uses duration ranges such as 30-60.
-    duration_value = str(duration or "30-60")
-    if duration_value.isdigit():
-        seconds = int(duration_value)
-        duration_value = "30-60" if seconds <= 60 else "60-90"
-    elif duration_value not in {"30-60", "60-90", "90-120", "120-180"}:
-        duration_value = "30-60"
-
+    try:
+        end_seconds = float(duration)
+    except (TypeError, ValueError):
+        end_seconds = 5.0
+    end_seconds = min(max(end_seconds, 3.0), 10.0)
+    ratio = aspect_ratio if aspect_ratio in {"16:9", "9:16", "1:1"} else "16:9"
     payload = {
-        "topic": prompt[:4000],
-        "language": os.environ.get("VADOO_LANGUAGE", "English").strip() or "English",
-        "voice": os.environ.get("VADOO_VOICE", "Charlie").strip() or "Charlie",
-        "theme": os.environ.get("VADOO_THEME", "Hormozi_1").strip() or "Hormozi_1",
-        "duration": duration_value,
+        "name": "Taha's Helper Bot video",
+        "end_seconds": end_seconds,
+        "aspect_ratio": ratio,
+        "style": {"prompt": prompt[:4000]},
+        "model": "ltx-2.5",
+        "resolution": "480p",
+        "audio": True,
     }
-
     headers = {
-        "X-API-KEY": VADOO_API_KEY,
+        "Authorization": f"Bearer {MAGIC_HOUR_API_KEY}",
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
     try:
-        r = requests.post(VADOO_API_URL, headers=headers, json=payload, timeout=60)
+        r = requests.post(f"{MAGIC_HOUR_API_BASE}/v1/text-to-video", headers=headers, json=payload, timeout=60)
     except requests.RequestException as e:
-        raise RuntimeError("اتصال به Vadoo برقرار نشد.") from e
-
+        raise RuntimeError("اتصال به Magic Hour برقرار نشد.") from e
     if not r.ok:
         detail = r.text[:800].replace("\n", " ").strip()
         if r.status_code in (401, 403):
-            raise RuntimeError("کلید Vadoo نامعتبر است یا حساب شما دسترسی API ویدیو ندارد.")
-        raise RuntimeError(f"Vadoo خطا داد ({r.status_code}): {detail}")
-
+            raise RuntimeError("کلید Magic Hour نامعتبر است یا دسترسی API ندارد.")
+        if r.status_code == 402:
+            raise RuntimeError("اعتبار Magic Hour کافی نیست؛ موجودی حساب را بررسی کن.")
+        raise RuntimeError(f"Magic Hour خطا داد ({r.status_code}): {detail}")
     try:
         data = r.json()
     except ValueError as e:
-        raise RuntimeError("Vadoo پاسخ JSON قابل خواندن برنگرداند.") from e
+        raise RuntimeError("Magic Hour پاسخ JSON قابل خواندن برنگرداند.") from e
 
-    vid = _find_video_id(data)
-    if not vid:
-        raise RuntimeError("Vadoo درخواست را پذیرفت ولی شناسه ویدیو را برنگرداند.")
-
-    # If Vadoo ever returns a URL immediately, use it; otherwise wait for webhook.
-    immediate_url = _find_video_url(data)
-    VADOO_WEBHOOK_JOBS[vid] = {
-        "status": "completed" if immediate_url else "processing",
-        "url": immediate_url,
-        "created_at": time.time(),
-    }
-    return {"job_id": vid, "status": VADOO_WEBHOOK_JOBS[vid]["status"], "url": immediate_url}
+    job_id = data.get("id") or data.get("project_id") or data.get("projectId")
+    url = _find_video_url(data)
+    if not job_id and not url:
+        raise RuntimeError("Magic Hour درخواست را پذیرفت اما شناسهٔ پروژه برنگرداند.")
+    if url:
+        return {"job_id": str(job_id or uuid.uuid4().hex), "status": "completed", "url": url}
+    job_id = str(job_id)
+    MAGIC_HOUR_JOBS[job_id] = {"status": "processing", "url": None, "created_at": time.time()}
+    return {"job_id": job_id, "status": "processing", "url": None}
 
 
 @app.post("/api/save-image")
