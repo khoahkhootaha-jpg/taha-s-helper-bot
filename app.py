@@ -1023,7 +1023,7 @@ textarea{flex:1;resize:none;border:0;outline:0;background:transparent;color:whit
 <div class="overlay" id="overlay" onclick="toggleSide()"></div>
 <main class="main">
 <header class="topbar">
- <div class="top-right"><button class="iconbtn" onclick="toggleSide()">☰</button><div><div class="brand">Taha's Helper Bot</div><div class="model" id="modelLabel">● آنلاین</div></div></div>
+ <div class="top-right"><button class="iconbtn" onclick="toggleSide()">☰</button><div><div class="brand">Taha's Helper Bot</div><div class="model" id="modelLabel">Groq · در حال شناسایی مدل…</div></div></div>
  <div class="top-left"><button class="iconbtn" onclick="newChat()">✎</button><button class="iconbtn" onclick="toggleMenu()">⋮</button></div>
  <div class="menu" id="menu"><button onclick="newChat();toggleMenu()">چت جدید</button><button onclick="clearChat();toggleMenu()">پاک کردن این چت</button><button onclick="showAbout();toggleMenu()">درباره</button><button onclick="alert('جستجوی وب برای پرسش‌های خبری و به‌روز به‌صورت خودکار فعال است.')">🌐 جستجوی وب</button></div>
 </header>
@@ -1124,7 +1124,7 @@ async function sendMessage(){
   const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:currentChatId,messages}),signal:activeController.signal});
   const data=await r.json();if(!r.ok)throw new Error(data.error||'خطای سرور');
   currentChatId=data.chat_id||currentChatId;if(isCodeBuildRequest(text))stopBuildAnimation(true);addMessage('assistant',data.reply||'پاسخی دریافت نشد.',{sources:data.sources||[],file_url:data.file_url||'',file_name:data.file_name||'',code_bundle:data.code_bundle||null});if(data.code_bundle&&data.code_bundle.preview_url){const pb=document.getElementById('buildPreviewBtn');if(pb){pb.disabled=false;pb.style.opacity='1';pb.textContent='▶ باز کردن پیش‌نمایش HTML';pb.onclick=()=>openPreview(data.code_bundle.preview_url);}}
-  document.getElementById('modelLabel').textContent=data.model||'';
+  document.getElementById('modelLabel').textContent='Groq · '+(data.model||'مدل پیش‌فرض');
   // History/local persistence are background tasks. They must never keep the composer locked.
   setBusy(false);
   loadHistory().catch(()=>{}); saveLocalState().catch(()=>{});
@@ -1287,7 +1287,7 @@ async function transcribe(blob,filename){
  }catch(e){setBusy(false);document.getElementById('status').textContent='آماده';alert('❌ '+e.message)}
 }
 
-async function loadInfo(){try{let r=await fetch('/health',{cache:'no-store'});let d=await r.json();if(!r.ok)throw new Error('health');document.getElementById('modelLabel').textContent=d.model||'● آنلاین'}catch(e){document.getElementById('modelLabel').textContent='● آنلاین'}}
+async function loadInfo(){try{let r=await fetch('/health',{cache:'no-store'});let d=await r.json();if(!r.ok)throw new Error('health');document.getElementById('modelLabel').textContent='Groq · '+(d.model||'مدل پیش‌فرض')}catch(e){document.getElementById('modelLabel').textContent='Groq · مدل از سرور دریافت نشد'}}
 loadInfo();loadHistory();
 </script>
 </body>

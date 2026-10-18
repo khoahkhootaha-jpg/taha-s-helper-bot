@@ -51,7 +51,7 @@ textarea{flex:1;resize:none;border:0;outline:0;background:transparent;color:whit
 <div class="overlay" id="overlay" onclick="toggleSide()"></div>
 <main class="main">
 <header class="topbar">
- <div class="top-right"><button class="iconbtn" onclick="toggleSide()">☰</button><div><div class="brand">Taha's Helper Bot</div><div class="model" id="modelLabel">● آنلاین</div></div></div>
+ <div class="top-right"><button class="iconbtn" onclick="toggleSide()">☰</button><div><div class="brand">Taha's Helper Bot</div><div class="model" id="modelLabel">Groq · در حال شناسایی مدل…</div></div></div>
  <div class="top-left"><button class="iconbtn" onclick="newChat()">✎</button><button class="iconbtn" onclick="toggleMenu()">⋮</button></div>
  <div class="menu" id="menu"><button onclick="newChat();toggleMenu()">چت جدید</button><button onclick="clearChat();toggleMenu()">پاک کردن این چت</button><button onclick="showAbout();toggleMenu()">درباره</button></div>
 </header>
@@ -95,7 +95,7 @@ function addMessage(role,text){messages.push({role,content:text});render()}
 function render(){const box=document.getElementById('messages');if(!messages.length){box.innerHTML="<div class='empty'><div><h1>Taha's Helper Bot</h1><p>هر چیزی می‌خواهی بنویس…</p></div></div>";return}box.innerHTML='';messages.forEach(m=>{const row=document.createElement('div');row.className='msg '+m.role;row.innerHTML='<div class="avatar">'+(m.role==='user'?'شما':'م')+'</div><div class="bubble"></div>';row.querySelector('.bubble').textContent=m.content;box.appendChild(row)});box.scrollTop=box.scrollHeight}
 function setBusy(v){busy=v;const b=document.getElementById('send');b.disabled=false;b.textContent=v?'■':'↑';b.classList.toggle('stop-mode',v);document.getElementById('status').textContent=v?'در حال پاسخ…':'آماده'}
 async function sendMessage(){if(busy){if(activeController)activeController.abort();return;}const text=input.value.trim();if(!text)return;addMessage('user',text);input.value='';input.style.height='auto';setBusy(true);activeController=new AbortController();try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages}),signal:activeController.signal});const data=await r.json();if(!r.ok)throw new Error(data.error||'خطای سرور');addMessage('assistant',data.reply||'پاسخی دریافت نشد.');document.getElementById('modelLabel').textContent=data.model||''}catch(e){addMessage('assistant','❌ '+e.message)}catch(e){addMessage('assistant',e.name==='AbortError'?'⏱️ درخواست متوقف شد. دوباره تلاش کن.':'❌ '+e.message)}finally{activeController=null;setBusy(false);input.focus()}}
-async function loadInfo(){try{let r=await fetch('/health',{cache:'no-store'});let d=await r.json();if(!r.ok)throw new Error('health');document.getElementById('modelLabel').textContent=d.model||'● آنلاین'}catch(e){document.getElementById('modelLabel').textContent='● آنلاین'}}
+async function loadInfo(){try{let r=await fetch('/health',{cache:'no-store'});let d=await r.json();if(!r.ok)throw new Error('health');document.getElementById('modelLabel').textContent='Groq · '+(d.model||'مدل پیش‌فرض')}catch(e){document.getElementById('modelLabel').textContent='Groq · مدل از سرور دریافت نشد'}}
 loadInfo();
 </script>
 </body>
