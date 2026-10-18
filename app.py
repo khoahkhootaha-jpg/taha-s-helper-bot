@@ -1085,7 +1085,7 @@ function setBusy(v){
  const status=document.getElementById('status'); if(status&&!v&&status.textContent.includes('در حال'))status.textContent='آماده';
 }
 async function saveLocalState(){try{if(messages.length) localStorage.setItem('meraj_last_chat',JSON.stringify({id:currentChatId,messages}));}catch(e){}}
-let buildTimer=null,buildStageIndex=0,buildStages=[],buildProgress=0,progressTimer=null;
+let buildTimer=null,buildStageIndex=0,buildStages=[];
 function isCodeBuildRequest(text){return /\b(html|css|javascript|python|typescript|react|website|web app|game|project|code|program)\b|کد|برنامه|پروژه|سایت|بازی|اپلیکیشن|اچ.?تی.?ام.?ال/i.test(text||'')}
 function updateBuildProgress(n){buildProgress=Math.max(0,Math.min(100,n));const f=document.getElementById('buildProgressFill'),p=document.getElementById('buildProgressPercent');if(f)f.style.width=buildProgress+'%';if(p)p.textContent=Math.round(buildProgress).toLocaleString('fa-IR')+'٪'}
 function startBuildAnimation(text){
