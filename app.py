@@ -777,17 +777,25 @@ def _save_video_bytes(content):
 
 
 def _find_video_url(value):
-    """Find a video URL in Vadoo webhook payloads with flexible field names."""
+    """Find a completed video download URL in a Magic Hour API response."""
     if isinstance(value, dict):
+        # Magic Hour's documented completed-project response uses downloads[].url.
+        downloads = value.get("downloads")
+        if isinstance(downloads, list):
+            for item in downloads:
+                if isinstance(item, dict):
+                    url = item.get("url")
+                    if isinstance(url, str) and url.startswith(("https://", "http://")):
+                        return url
         preferred = (
             "video_url", "videoUrl", "download_url", "downloadUrl",
-            "url", "file_url", "fileUrl", "output_url", "outputUrl",
+            "output_url", "outputUrl", "file_url", "fileUrl", "url",
         )
         for key in preferred:
             item = value.get(key)
             if isinstance(item, str) and item.startswith(("http://", "https://")):
                 low = item.lower()
-                if any(x in low for x in (".mp4", "video", "download", "vadoo")) or key != "url":
+                if key != "url" or ".mp4" in low or "video" in low or "download" in low:
                     return item
         for item in value.values():
             found = _find_video_url(item)
@@ -800,7 +808,7 @@ def _find_video_url(value):
                 return found
     elif isinstance(value, str) and value.startswith(("http://", "https://")):
         low = value.lower()
-        if ".mp4" in low or "video" in low:
+        if ".mp4" in low or "video" in low or "download" in low:
             return value
     return None
 
@@ -868,7 +876,9 @@ def generate_video_file(prompt, duration=5, aspect_ratio="16:9"):
     except ValueError as e:
         raise RuntimeError("Magic Hour پاسخ JSON قابل خواندن برنگرداند.") from e
 
-    job_id = data.get("id") or data.get("project_id") or data.get("projectId")
+    job_id = data.get("project_id") or data.get("projectId") or data.get("id")
+    if isinstance(data.get("project"), dict):
+        job_id = job_id or data["project"].get("id") or data["project"].get("project_id")
     url = _find_video_url(data)
     if not job_id and not url:
         raise RuntimeError("Magic Hour درخواست را پذیرفت اما شناسهٔ پروژه برنگرداند.")
@@ -898,31 +908,61 @@ def api_generate_video():
 
 @app.get("/api/video-status/<job_id>")
 def api_video_status(job_id):
-    """Poll Magic Hour project status and return its downloadable video URL when ready."""
+    """Poll the official Magic Hour video-project endpoint and expose the final download URL."""
     if not MAGIC_HOUR_API_KEY:
         return jsonify(status="error", url=None, error="MAGIC_HOUR_API_KEY تنظیم نشده است."), 500
-    headers = {"Authorization": f"Bearer {MAGIC_HOUR_API_KEY}", "Accept": "application/json"}
-    last_error = None
-    for endpoint in (f"/v1/text-to-video/{quote(str(job_id), safe='')}", f"/v1/videos/{quote(str(job_id), safe='')}"):
-        try:
-            r = requests.get(f"{MAGIC_HOUR_API_BASE}{endpoint}", headers=headers, timeout=25)
-            if r.status_code == 404:
-                continue
-            if not r.ok:
-                last_error = f"Magic Hour status HTTP {r.status_code}: {r.text[:300]}"
-                continue
-            data = r.json()
-            url = _find_video_url(data)
-            status_value = str(data.get("status") or data.get("state") or "").lower()
-            if url and status_value not in {"failed", "error", "canceled", "cancelled"}:
-                return jsonify(status="completed", url=url), 200
-            if status_value in {"failed", "error", "canceled", "cancelled"}:
-                return jsonify(status="error", url=None, error="ساخت ویدیو در Magic Hour ناموفق شد."), 200
-            return jsonify(status="processing", url=None), 200
-        except (requests.RequestException, ValueError) as e:
-            last_error = str(e)
-    print(f"Magic Hour status lookup failed for {job_id}: {last_error}", flush=True)
-    return jsonify(status="processing", url=None), 200
+
+    endpoint = f"{MAGIC_HOUR_API_BASE}/v1/video-projects/{quote(str(job_id), safe='')}"
+    headers = {
+        "Authorization": f"Bearer {MAGIC_HOUR_API_KEY}",
+        "Accept": "application/json",
+    }
+    try:
+        r = requests.get(endpoint, headers=headers, timeout=25)
+    except requests.RequestException as e:
+        print(f"Magic Hour status network error for {job_id}: {e}", flush=True)
+        return jsonify(status="processing", url=None, message="اتصال به سرویس وضعیت موقتاً برقرار نشد."), 200
+
+    if not r.ok:
+        detail = (r.text or "")[:500].replace("\\n", " ").strip()
+        print(f"Magic Hour status HTTP {r.status_code} for {job_id}: {detail}", flush=True)
+        if r.status_code in (401, 403):
+            return jsonify(status="error", url=None, error="کلید Magic Hour معتبر نیست یا دسترسی API ندارد."), 200
+        if r.status_code == 404:
+            return jsonify(status="error", url=None, error="Magic Hour پروژه‌ای با این شناسه پیدا نکرد. شناسهٔ برگشتی هنگام ساخت را باید بررسی کنیم."), 200
+        return jsonify(status="processing", url=None, message=f"Magic Hour status HTTP {r.status_code}"), 200
+
+    try:
+        data = r.json()
+    except ValueError:
+        print(f"Magic Hour status returned non-JSON for {job_id}: {(r.text or '')[:300]}", flush=True)
+        return jsonify(status="processing", url=None), 200
+
+    if not isinstance(data, dict):
+        return jsonify(status="processing", url=None), 200
+
+    # Some wrappers return the project inside a data/project object.
+    project = data.get("data") or data.get("project") or data
+    if not isinstance(project, dict):
+        project = data
+
+    status_value = str(project.get("status") or project.get("state") or "").strip().lower()
+    url = _find_video_url(project) or _find_video_url(data)
+
+    if status_value in {"error", "failed", "canceled", "cancelled"}:
+        error_detail = project.get("error")
+        print(f"Magic Hour project failed {job_id}: {error_detail}", flush=True)
+        return jsonify(status="error", url=None, error="Magic Hour نتوانست این ویدیو را بسازد.", details=error_detail), 200
+
+    if status_value in {"complete", "completed", "succeeded", "success"} and url:
+        return jsonify(status="completed", url=url), 200
+
+    # A URL is the strongest signal that the video is ready, even if the provider
+    # changes its status wording.
+    if url:
+        return jsonify(status="completed", url=url), 200
+
+    return jsonify(status="processing", url=None, provider_status=status_value or "unknown"), 200
 
 
 HTML_PAGE = r'''<!doctype html>
@@ -1122,7 +1162,7 @@ async function generateVideo(){
     }
     document.getElementById('status').textContent='🎬 Magic Hour در حال ساخت ویدیو است…';
    }
-   if(!completed){messages[pendingIndex].content='⏳ درخواست ویدیو ثبت شد، اما Vadoo هنوز لینک نهایی را نفرستاده است. بعداً دوباره چت را باز کن.';render();}
+   if(!completed){messages[pendingIndex].content='⏳ درخواست ویدیو ثبت شد، اما Magic Hour هنوز لینک نهایی را نفرستاده است. بعداً دوباره چت را باز کن.';render();}
   }
   document.getElementById('videoPrompt').value='';toggleVideoPanel();
   if(!currentChatId)currentChatId=crypto.randomUUID?crypto.randomUUID():String(Date.now());
@@ -1436,7 +1476,7 @@ def generate_image():
 
 
 def _find_video_url(value):
-    """Find a video URL in Vadoo webhook payloads with flexible field names."""
+    """Find a video URL in a provider response with flexible field names."""
     if isinstance(value, dict):
         preferred = (
             "video_url", "videoUrl", "download_url", "downloadUrl",
@@ -1527,7 +1567,9 @@ def generate_video_file(prompt, duration=5, aspect_ratio="16:9"):
     except ValueError as e:
         raise RuntimeError("Magic Hour پاسخ JSON قابل خواندن برنگرداند.") from e
 
-    job_id = data.get("id") or data.get("project_id") or data.get("projectId")
+    job_id = data.get("project_id") or data.get("projectId") or data.get("id")
+    if isinstance(data.get("project"), dict):
+        job_id = job_id or data["project"].get("id") or data["project"].get("project_id")
     url = _find_video_url(data)
     if not job_id and not url:
         raise RuntimeError("Magic Hour درخواست را پذیرفت اما شناسهٔ پروژه برنگرداند.")
