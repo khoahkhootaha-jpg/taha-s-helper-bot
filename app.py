@@ -34,13 +34,11 @@ POLLINATIONS_API_KEY = ""
 POLLINATIONS_IMAGE_MODEL = "gptimage"
 POLLINATIONS_VIDEO_MODEL = "veo"
 POLLINATIONS_VIDEO_MODELS = []
-MAGIC_HOUR_API_KEY = ""
-MAGIC_HOUR_API_BASE = "https://api.magichour.ai"
-MAGIC_HOUR_JOBS = {}
-TRIPO_API_KEY = ""
-TRIPO_API_BASE = "https://openapi.tripo3d.ai/v3"
-TRIPO_JOBS = {}
-TRIPO_TIMEOUT_SECONDS = 900
+VADOO_API_KEY = ""
+V2FUN_API_KEY = ""
+V2FUN_API_BASE = "https://api.v2fun.ai/api/v1"
+VADOO_API_URL = "https://viralapi.vadoo.tv/api/generate_video"
+VADOO_WEBHOOK_JOBS = {}
 GENERATED_DIR = BASE_DIR / "generated"
 GENERATED_DIR.mkdir(exist_ok=True)
 FILES_DIR = BASE_DIR / "generated_files"
@@ -52,7 +50,7 @@ app.config["JSON_AS_ASCII"] = False
 
 
 def setup():
-    global GEMINI_API_KEY, API_KEY, MODEL, VISION_MODEL, TRANSCRIBE_MODEL, POLLINATIONS_API_KEY, POLLINATIONS_IMAGE_MODEL, POLLINATIONS_VIDEO_MODEL, POLLINATIONS_VIDEO_MODELS, MAGIC_HOUR_API_KEY
+    global GEMINI_API_KEY, API_KEY, MODEL, VISION_MODEL, TRANSCRIBE_MODEL, POLLINATIONS_API_KEY, POLLINATIONS_IMAGE_MODEL, POLLINATIONS_VIDEO_MODEL, POLLINATIONS_VIDEO_MODELS, VADOO_API_KEY, V2FUN_API_KEY
     print("\n" + "=" * 56)
     print("                    Taha's Helper Bot")
     print("=" * 56)
@@ -62,9 +60,8 @@ def setup():
     POLLINATIONS_API_KEY = os.environ.get("POLLINATIONS_API_KEY", "").strip()
     POLLINATIONS_IMAGE_MODEL = os.environ.get("POLLINATIONS_IMAGE_MODEL", "").strip()
     POLLINATIONS_VIDEO_MODEL = os.environ.get("POLLINATIONS_VIDEO_MODEL", "").strip()
-    MAGIC_HOUR_API_KEY = os.environ.get("MAGIC_HOUR_API_KEY", "").strip()
-    global TRIPO_API_KEY
-    TRIPO_API_KEY = os.environ.get("TRIPO_API_KEY", "").strip()
+    VADOO_API_KEY = os.environ.get("VADOO_API_KEY", "").strip()
+    V2FUN_API_KEY = os.environ.get("V2FUN_API_KEY", "").strip()
 
     if not API_KEY and sys.stdin.isatty():
         print("🔑 Groq API Key را همین‌جا در ترمینال وارد کن.")
@@ -113,15 +110,15 @@ def setup():
         print("🖼 مدل ساخت تصویر: Pollinations key وارد نشده")
         print("🎬 مدل ساخت ویدیو: Pollinations key وارد نشده")
 
-    if TRIPO_API_KEY:
-        print("🧊 سرویس ساخت مدل سه‌بعدی: Tripo AI فعال است")
+    if V2FUN_API_KEY:
+        print("🧊 سرویس ساخت مدل سه‌بعدی: V2Fun API فعال است")
     else:
-        print("🧊 ساخت مدل سه‌بعدی: TRIPO_API_KEY تنظیم نشده است")
+        print("🧊 سرویس ساخت مدل سه‌بعدی: V2FUN_API_KEY تنظیم نشده است")
 
-    if MAGIC_HOUR_API_KEY:
-        print("🎬 سرویس ویدیو: Magic Hour API فعال است")
+    if VADOO_API_KEY:
+        print("🎬 سرویس ویدیو: Vadoo AI (API) فعال است")
     else:
-        print("🎬 سرویس ویدیو: MAGIC_HOUR_API_KEY تنظیم نشده است")
+        print("🎬 سرویس ویدیو: Vadoo API Key تنظیم نشده است")
     return True
 
 def read_history():
@@ -788,31 +785,17 @@ def _save_video_bytes(content):
 
 
 def _find_video_url(value):
-    """Find a completed video download URL in a Magic Hour API response."""
+    """Find a video URL in Vadoo webhook payloads with flexible field names."""
     if isinstance(value, dict):
-        # Magic Hour's documented completed-project response uses downloads[].url.
-        downloads = value.get("downloads")
-        if isinstance(downloads, list):
-            for item in downloads:
-                if isinstance(item, dict):
-                    url = item.get("url")
-                    if isinstance(url, str) and url.startswith(("https://", "http://")):
-                        return url
-        # Magic Hour also retains the legacy singular `download: {url: ...}` field.
-        download = value.get("download")
-        if isinstance(download, dict):
-            url = download.get("url")
-            if isinstance(url, str) and url.startswith(("https://", "http://")):
-                return url
         preferred = (
             "video_url", "videoUrl", "download_url", "downloadUrl",
-            "output_url", "outputUrl", "file_url", "fileUrl", "url",
+            "url", "file_url", "fileUrl", "output_url", "outputUrl",
         )
         for key in preferred:
             item = value.get(key)
             if isinstance(item, str) and item.startswith(("http://", "https://")):
                 low = item.lower()
-                if key != "url" or ".mp4" in low or "video" in low or "download" in low:
+                if any(x in low for x in (".mp4", "video", "download", "vadoo")) or key != "url":
                     return item
         for item in value.values():
             found = _find_video_url(item)
@@ -825,7 +808,7 @@ def _find_video_url(value):
                 return found
     elif isinstance(value, str) and value.startswith(("http://", "https://")):
         low = value.lower()
-        if ".mp4" in low or "video" in low or "download" in low:
+        if ".mp4" in low or "video" in low:
             return value
     return None
 
@@ -849,66 +832,73 @@ def _find_video_id(value):
     return None
 
 
-def generate_video_file(prompt, duration=5, aspect_ratio="16:9"):
-    """Submit a text-to-video generation job to Magic Hour."""
+def generate_video_file(prompt, duration=30, aspect_ratio="16:9"):
+    """Generate a video through Vadoo AI's Text-to-Video API.
+
+    Vadoo returns a video id first and sends the final download URL to the
+    webhook configured in the user's Vadoo profile. The browser polls our
+    status endpoint until that webhook arrives.
+    """
     prompt = (prompt or "").strip()
     if not prompt:
         raise RuntimeError("توضیح ویدیو خالی است.")
-    if not MAGIC_HOUR_API_KEY:
-        raise RuntimeError("برای ساخت ویدیو باید MAGIC_HOUR_API_KEY را در Environment Variables تنظیم کنی.")
+    if not VADOO_API_KEY:
+        raise RuntimeError("برای ساخت ویدیو باید VADOO_API_KEY را در Environment Variables تنظیم کنی.")
 
-    try:
-        end_seconds = float(duration or 5)
-    except (TypeError, ValueError):
-        end_seconds = 5.0
-    end_seconds = min(max(end_seconds, 3.0), 10.0)
-    ratio = aspect_ratio if aspect_ratio in {"16:9", "9:16", "1:1"} else "16:9"
+    # The Vadoo Text-to-Video API uses duration ranges such as 30-60.
+    duration_value = str(duration or "30-60")
+    if duration_value.isdigit():
+        seconds = int(duration_value)
+        duration_value = "30-60" if seconds <= 60 else "60-90"
+    elif duration_value not in {"30-60", "60-90", "90-120", "120-180"}:
+        duration_value = "30-60"
+
     payload = {
-        "name": "Taha's Helper Bot video",
-        "end_seconds": end_seconds,
-        "aspect_ratio": ratio,
-        "style": {"prompt": prompt[:4000]},
-        "model": "ltx-2.5",
-        "resolution": "480p",
-        "audio": True,
+        "topic": prompt[:4000],
+        "language": os.environ.get("VADOO_LANGUAGE", "English").strip() or "English",
+        "voice": os.environ.get("VADOO_VOICE", "Charlie").strip() or "Charlie",
+        "theme": os.environ.get("VADOO_THEME", "Hormozi_1").strip() or "Hormozi_1",
+        "duration": duration_value,
     }
+
     headers = {
-        "Authorization": f"Bearer {MAGIC_HOUR_API_KEY}",
+        "X-API-KEY": VADOO_API_KEY,
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
     try:
-        r = requests.post(f"{MAGIC_HOUR_API_BASE}/v1/text-to-video", headers=headers, json=payload, timeout=60)
+        r = requests.post(VADOO_API_URL, headers=headers, json=payload, timeout=60)
     except requests.RequestException as e:
-        raise RuntimeError("اتصال به Magic Hour برقرار نشد.") from e
+        raise RuntimeError("اتصال به Vadoo برقرار نشد.") from e
+
     if not r.ok:
-        detail = r.text[:800].replace("\\n", " ").strip()
+        detail = r.text[:800].replace("\n", " ").strip()
         if r.status_code in (401, 403):
-            raise RuntimeError("کلید Magic Hour نامعتبر است یا دسترسی API ندارد.")
-        if r.status_code == 402:
-            raise RuntimeError("اعتبار Magic Hour کافی نیست؛ موجودی حساب را بررسی کن.")
-        raise RuntimeError(f"Magic Hour خطا داد ({r.status_code}): {detail}")
+            raise RuntimeError("کلید Vadoo نامعتبر است یا حساب شما دسترسی API ویدیو ندارد.")
+        raise RuntimeError(f"Vadoo خطا داد ({r.status_code}): {detail}")
+
     try:
         data = r.json()
     except ValueError as e:
-        raise RuntimeError("Magic Hour پاسخ JSON قابل خواندن برنگرداند.") from e
+        raise RuntimeError("Vadoo پاسخ JSON قابل خواندن برنگرداند.") from e
 
-    job_id = data.get("project_id") or data.get("projectId") or data.get("id")
-    if isinstance(data.get("project"), dict):
-        job_id = job_id or data["project"].get("id") or data["project"].get("project_id")
-    url = _find_video_url(data)
-    if not job_id and not url:
-        raise RuntimeError("Magic Hour درخواست را پذیرفت اما شناسهٔ پروژه برنگرداند.")
-    if url:
-        return {"job_id": str(job_id or uuid.uuid4().hex), "status": "completed", "url": url}
-    job_id = str(job_id)
-    MAGIC_HOUR_JOBS[job_id] = {"status": "processing", "url": None, "created_at": time.time()}
-    return {"job_id": job_id, "status": "processing", "url": None}
+    vid = _find_video_id(data)
+    if not vid:
+        raise RuntimeError("Vadoo درخواست را پذیرفت ولی شناسه ویدیو را برنگرداند.")
+
+    # If Vadoo ever returns a URL immediately, use it; otherwise wait for webhook.
+    immediate_url = _find_video_url(data)
+    VADOO_WEBHOOK_JOBS[vid] = {
+        "status": "completed" if immediate_url else "processing",
+        "url": immediate_url,
+        "created_at": time.time(),
+    }
+    return {"job_id": vid, "status": VADOO_WEBHOOK_JOBS[vid]["status"], "url": immediate_url}
 
 
 @app.post("/api/generate-video")
 def api_generate_video():
-    """Start a Magic Hour text-to-video job."""
+    """Start a Vadoo text-to-video job."""
     data = request.get_json(silent=True) or {}
     prompt = str(data.get("prompt") or "").strip()
     duration = data.get("duration", "30-60")
@@ -919,69 +909,44 @@ def api_generate_video():
         result = generate_video_file(prompt, duration=duration, aspect_ratio=aspect_ratio)
         return jsonify(result), 200
     except Exception as e:
-        print(f"🎬 Magic Hour generate error: {e}", flush=True)
+        print(f"🎬 Vadoo generate error: {e}", flush=True)
         return jsonify(error=str(e)), 500
 
 
 @app.get("/api/video-status/<job_id>")
 def api_video_status(job_id):
-    """Poll the official Magic Hour video-project endpoint and expose the final download URL."""
-    if not MAGIC_HOUR_API_KEY:
-        return jsonify(status="error", url=None, error="MAGIC_HOUR_API_KEY تنظیم نشده است."), 500
-
-    endpoint = f"{MAGIC_HOUR_API_BASE}/v1/video-projects/{quote(str(job_id), safe='')}"
-    headers = {
-        "Authorization": f"Bearer {MAGIC_HOUR_API_KEY}",
-        "Accept": "application/json",
-    }
-    try:
-        r = requests.get(endpoint, headers=headers, timeout=25)
-    except requests.RequestException as e:
-        print(f"Magic Hour status network error for {job_id}: {e}", flush=True)
-        return jsonify(status="processing", url=None, message="اتصال به سرویس وضعیت موقتاً برقرار نشد."), 200
-
-    if not r.ok:
-        detail = (r.text or "")[:500].replace("\\n", " ").strip()
-        print(f"Magic Hour status HTTP {r.status_code} for {job_id}: {detail}", flush=True)
-        if r.status_code in (401, 403):
-            return jsonify(status="error", url=None, error="کلید Magic Hour معتبر نیست یا دسترسی API ندارد."), 200
-        if r.status_code == 404:
-            return jsonify(status="error", url=None, error="Magic Hour پروژه‌ای با این شناسه پیدا نکرد. شناسهٔ برگشتی هنگام ساخت را باید بررسی کنیم."), 200
-        return jsonify(status="processing", url=None, message=f"Magic Hour status HTTP {r.status_code}"), 200
-
-    try:
-        data = r.json()
-    except ValueError:
-        print(f"Magic Hour status returned non-JSON for {job_id}: {(r.text or '')[:300]}", flush=True)
+    job = VADOO_WEBHOOK_JOBS.get(str(job_id))
+    if not job:
         return jsonify(status="processing", url=None), 200
+    return jsonify(
+        status=job.get("status", "processing"),
+        url=job.get("url"),
+    ), 200
 
-    if not isinstance(data, dict):
-        return jsonify(status="processing", url=None), 200
 
-    # Some wrappers return the project inside a data/project object.
-    project = data.get("data") or data.get("project") or data
-    if not isinstance(project, dict):
-        project = data
+@app.post("/api/vadoo/webhook")
+def api_vadoo_webhook():
+    """Receive Vadoo's completion webhook and attach the final video URL."""
+    data = request.get_json(silent=True)
+    if data is None:
+        raw = request.get_data(as_text=True)
+        try:
+            data = json.loads(raw) if raw else {}
+        except Exception:
+            data = {"raw": raw}
 
-    status_value = str(project.get("status") or project.get("state") or "").strip().lower()
-    url = _find_video_url(project) or _find_video_url(data)
+    print(f"🎬 Vadoo webhook received: {json.dumps(data, ensure_ascii=False)[:2000]}", flush=True)
+    vid = _find_video_id(data)
+    url = _find_video_url(data)
 
-    if status_value in {"error", "failed", "canceled", "cancelled"}:
-        error_detail = project.get("error")
-        if isinstance(error_detail, dict):
-            error_detail = error_detail.get("message") or error_detail.get("code") or str(error_detail)
-        print(f"Magic Hour project failed {job_id}: {error_detail}", flush=True)
-        return jsonify(status="error", url=None, error="Magic Hour نتوانست این ویدیو را بسازد.", details=error_detail), 200
+    if vid:
+        VADOO_WEBHOOK_JOBS[str(vid)] = {
+            "status": "completed" if url else "processing",
+            "url": url,
+            "created_at": time.time(),
+        }
 
-    if status_value in {"complete", "completed", "succeeded", "success"} and url:
-        return jsonify(status="completed", url=url), 200
-
-    # A URL is the strongest signal that the video is ready, even if the provider
-    # changes its status wording.
-    if url:
-        return jsonify(status="completed", url=url), 200
-
-    return jsonify(status="processing", url=None, provider_status=status_value or "unknown"), 200
+    return jsonify(ok=True, vid=vid, url=url), 200
 
 
 HTML_PAGE = r'''<!doctype html>
@@ -1015,12 +980,12 @@ body{overflow:hidden}button{font:inherit;color:inherit}
 .composer-wrap{position:fixed;left:0;right:0;bottom:0;padding:12px 14px 16px;background:linear-gradient(transparent,var(--bg) 22%);z-index:10}
 .composer{max-width:820px;margin:auto;background:#1d1d22;border:1px solid #35353e;border-radius:18px;display:flex;align-items:flex-end;gap:8px;padding:8px}
 textarea{flex:1;resize:none;border:0;outline:0;background:transparent;color:white;min-height:44px;max-height:160px;padding:11px;font-size:16px;line-height:1.5}
-.send,.attach,.mic,.imagegen{width:44px;height:44px;border:0;border-radius:13px;cursor:pointer;display:grid;place-items:center}.send{background:#fff;color:#111;font-size:20px}.attach,.mic,.imagegen{background:#292930}.imagegen.active{background:#3b2f70}.mic.recording{background:#7f1d1d;animation:pulse 1s infinite}.send:disabled,.mic:disabled{opacity:.35}.send.stop-mode{border-radius:10px;background:#f3f3f3;color:#111;font-size:17px;box-shadow:0 2px 0 #a9a9ad}.send.stop-mode:active{background:#d7d7d7}.send.stop-mode{border-radius:10px;background:#f3f3f3;color:#111;font-size:17px;box-shadow:0 2px 0 #a9a9ad}.send.stop-mode:active{background:#d7d7d7}.generated-video{width:min(100%,720px);border-radius:14px;display:block;margin-top:10px;background:#000}.video-panel{}.file-input{display:none}
+.send,.attach,.mic,.imagegen{width:44px;height:44px;border:0;border-radius:13px;cursor:pointer;display:grid;place-items:center}.send{background:#fff;color:#111;font-size:20px}.attach,.mic,.imagegen{background:#292930}.imagegen.active{background:#3b2f70}.mic.recording{background:#7f1d1d;animation:pulse 1s infinite}.send:disabled,.mic:disabled{opacity:.35}.generated-video{width:min(100%,720px);border-radius:14px;display:block;margin-top:10px;background:#000}.video-panel{}.file-input{display:none}
 .status{max-width:820px;margin:6px auto 0;color:#888;font-size:11px;padding:0 8px}.file-pill{max-width:820px;margin:0 auto 7px;color:#bbb;font-size:12px;padding:0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .msg-actions{display:flex;gap:6px;margin-top:8px}.msg-action{border:1px solid #34343d;background:#18181d;color:#bcbcc5;border-radius:9px;padding:5px 9px;font-size:11px;cursor:pointer}.msg-action:hover{background:#292930;color:#fff}.sources{margin-top:9px;padding-top:8px;border-top:1px solid #34343d;font-size:12px}.sources-title{color:#aaa;margin-bottom:5px}.source-link{display:block;color:#b9b9c5;text-decoration:none;padding:3px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.source-link:hover{color:#fff;text-decoration:underline}.web-badge{display:inline-block;font-size:10px;color:#aaa;background:#17171c;border:1px solid #303039;border-radius:7px;padding:2px 6px;margin-bottom:7px}
-.image-panel{max-width:820px;margin:0 auto 7px;display:none;padding:8px;background:#17171c;border:1px solid #30303a;border-radius:14px;gap:7px;align-items:center}.image-panel.open{display:flex}.image-panel input{flex:1;min-width:0;background:#0f0f13;border:1px solid #30303a;color:#fff;border-radius:10px;padding:10px;outline:none}.image-panel button{border:1px solid #34343d;background:#25252c;color:#fff;border-radius:10px;padding:9px 12px;cursor:pointer}.generated-image{max-width:100%;border-radius:14px;margin-top:10px;display:block}.image-tools{display:flex;gap:7px;margin-top:8px;align-items:center}.image-download{text-decoration:none!important;display:inline-flex!important;align-items:center;justify-content:center}.image-caption{font-size:12px;color:#aaa;margin-top:6px}.file-tools{display:flex;gap:7px;margin-top:9px;align-items:center;flex-wrap:wrap}.file-download{text-decoration:none!important}.code-block{margin:12px 0 4px;background:#0d0d10;border:1px solid #30303a;border-radius:12px;overflow:hidden;direction:ltr;text-align:left}.code-head{display:flex;align-items:center;justify-content:space-between;padding:7px 9px;background:#17171c;border-bottom:1px solid #30303a;color:#aaa;font-size:11px}.code-copy{border:1px solid #34343d;background:#25252c;color:#ddd;border-radius:7px;padding:4px 8px;font-size:11px;cursor:pointer}.code-block code{display:block;white-space:pre;overflow:auto;padding:12px;font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#eee}.code-download{border:1px solid #34343d;background:#25252c;color:#ddd;border-radius:7px;padding:4px 8px;font-size:11px;text-decoration:none}.preview-btn{border:1px solid #386b56;background:#153528;color:#d8ffea;border-radius:8px;padding:7px 11px;cursor:pointer}.code-bundle-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.build-card{max-width:820px;margin:0 auto 16px;padding:14px;border:1px solid #34433d;border-radius:16px;background:linear-gradient(135deg,#101c18,#111318);direction:rtl}.road{height:74px;border-radius:12px;overflow:hidden;position:relative;background:linear-gradient(#15251f 0 35%,#30343a 35% 65%,#15251f 65%);}.road:before{content:"";position:absolute;left:0;right:0;top:50%;height:4px;background:repeating-linear-gradient(90deg,#f4e6a6 0 28px,transparent 28px 55px);transform:translateY(-50%);animation:roadmove .55s linear infinite}.road:after{content:"";position:absolute;left:50%;top:0;bottom:0;width:2px;background:#ffffff18;box-shadow:-80px 0 #ffffff12,80px 0 #ffffff12}.build-title{font-size:13px;color:#e5fff1;margin:0 0 9px}.build-stage{font-size:12px;color:#c6d4ce;margin-top:9px}.retry-btn{border:1px solid #55503a;background:#282416;color:#ffe9a6;border-radius:9px;padding:5px 9px;font-size:11px;cursor:pointer;margin-top:8px}.build-dots{display:flex;gap:5px;margin-top:8px}.build-dots i{width:6px;height:6px;border-radius:50%;background:#55d69a;animation:dotpulse 1s infinite}.build-dots i:nth-child(2){animation-delay:.2s}.build-dots i:nth-child(3){animation-delay:.4s}@keyframes roadmove{to{background-position:55px 0}}@keyframes dotpulse{50%{opacity:.2;transform:scale(.7)}}.cancel-btn{display:none;border:1px solid #4a2d2d;background:#241719;color:#ddd;border-radius:9px;padding:4px 8px;font-size:11px;cursor:pointer}.cancel-btn.show{display:inline-block}
+.image-panel{max-width:820px;margin:0 auto 7px;display:none;padding:8px;background:#17171c;border:1px solid #30303a;border-radius:14px;gap:7px;align-items:center}.image-panel.open{display:flex}.image-panel input{flex:1;min-width:0;background:#0f0f13;border:1px solid #30303a;color:#fff;border-radius:10px;padding:10px;outline:none}.image-panel button{border:1px solid #34343d;background:#25252c;color:#fff;border-radius:10px;padding:9px 12px;cursor:pointer}.generated-image{max-width:100%;border-radius:14px;margin-top:10px;display:block}.image-tools{display:flex;gap:7px;margin-top:8px;align-items:center}.image-download{text-decoration:none!important;display:inline-flex!important;align-items:center;justify-content:center}.image-caption{font-size:12px;color:#aaa;margin-top:6px}.file-tools{display:flex;gap:7px;margin-top:9px;align-items:center;flex-wrap:wrap}.file-download{text-decoration:none!important}.code-block{margin:12px 0 4px;background:#0d0d10;border:1px solid #30303a;border-radius:12px;overflow:hidden;direction:ltr;text-align:left}.code-head{display:flex;align-items:center;justify-content:space-between;padding:7px 9px;background:#17171c;border-bottom:1px solid #30303a;color:#aaa;font-size:11px}.code-copy{border:1px solid #34343d;background:#25252c;color:#ddd;border-radius:7px;padding:4px 8px;font-size:11px;cursor:pointer}.code-block code{display:block;white-space:pre;overflow:auto;padding:12px;font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#eee}.code-download{border:1px solid #34343d;background:#25252c;color:#ddd;border-radius:7px;padding:4px 8px;font-size:11px;text-decoration:none}.preview-btn{border:1px solid #386b56;background:#153528;color:#d8ffea;border-radius:8px;padding:7px 11px;cursor:pointer}.code-bundle-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.preview-wrap{margin-top:10px;border:1px solid #34343d;border-radius:12px;overflow:hidden;background:#fff}.preview-wrap iframe{width:100%;height:440px;border:0;background:white}.build-card{max-width:820px;margin:0 auto 16px;padding:14px;border:1px solid #34433d;border-radius:16px;background:linear-gradient(135deg,#101c18,#111318);direction:rtl}.road{height:74px;border-radius:12px;overflow:hidden;position:relative;background:linear-gradient(#15251f 0 35%,#30343a 35% 65%,#15251f 65%);}.road:before{content:"";position:absolute;left:0;right:0;top:50%;height:4px;background:repeating-linear-gradient(90deg,#f4e6a6 0 28px,transparent 28px 55px);transform:translateY(-50%);animation:roadmove .55s linear infinite}.road:after{content:"";position:absolute;left:50%;top:0;bottom:0;width:2px;background:#ffffff18;box-shadow:-80px 0 #ffffff12,80px 0 #ffffff12}.build-title{font-size:13px;color:#e5fff1;margin:0 0 9px}.build-stage{font-size:12px;color:#c6d4ce;margin-top:9px}.build-dots{display:flex;gap:5px;margin-top:8px}.build-dots i{width:6px;height:6px;border-radius:50%;background:#55d69a;animation:dotpulse 1s infinite}.build-dots i:nth-child(2){animation-delay:.2s}.build-dots i:nth-child(3){animation-delay:.4s}@keyframes roadmove{to{background-position:55px 0}}@keyframes dotpulse{50%{opacity:.2;transform:scale(.7)}}.cancel-btn{display:none;border:1px solid #4a2d2d;background:#241719;color:#ddd;border-radius:9px;padding:4px 8px;font-size:11px;cursor:pointer}.cancel-btn.show{display:inline-block}
 
-.model3d-download{display:inline-block;margin:8px 0;padding:8px 12px;background:#153528;border:1px solid #386b56;border-radius:9px;color:#d8ffea;text-decoration:none}.overlay{display:none;position:fixed;inset:0;background:#0007;z-index:15}
+.model3d-panel{display:none;position:fixed;left:14px;right:14px;bottom:100px;z-index:12;max-width:820px;margin:auto;background:#17171d;border:1px solid #34343d;border-radius:16px;padding:14px;box-shadow:0 16px 40px #0009}.model3d-panel.open{display:block}.model3d-panel input[type=text],.model3d-panel select{width:100%;background:#222229;color:#fff;border:1px solid #3b3b46;border-radius:10px;padding:12px;font:inherit;margin:6px 0 10px}.model3d-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.model3d-row button{border:0;border-radius:10px;padding:11px 15px;background:#19c37d;color:#07130d;font-weight:700;cursor:pointer}.model3d-row .secondary{background:#303039;color:#eee}.model3d-note{color:#aaa;font-size:12px;line-height:1.7;margin:4px 0 10px}.overlay{display:none;position:fixed;inset:0;background:#0007;z-index:15}
 .overlay.open{display:block}@keyframes pulse{50%{opacity:.55}}
 @media(min-width:900px){.sidebar{position:relative;transform:none;order:2;border-left:1px solid var(--line)}.close-side{display:none}.overlay{display:none!important}.main{width:calc(100% - 290px)}}
 </style>
@@ -1036,25 +1001,32 @@ textarea{flex:1;resize:none;border:0;outline:0;background:transparent;color:whit
 <header class="topbar">
  <div class="top-right"><button class="iconbtn" onclick="toggleSide()">☰</button><div><div class="brand">Taha's Helper Bot</div><div class="model" id="modelLabel">● آنلاین</div></div></div>
  <div class="top-left"><button class="iconbtn" onclick="newChat()">✎</button><button class="iconbtn" onclick="toggleMenu()">⋮</button></div>
- <div class="menu" id="menu"><button onclick="newChat();toggleMenu()">چت جدید</button><button onclick="clearChat();toggleMenu()">پاک کردن این چت</button><button onclick="showAbout();toggleMenu()">درباره</button><button onclick="alert('جستجوی وب برای پرسش‌های خبری و به‌روز به‌صورت خودکار فعال است.')">🌐 جستجوی وب</button></div>
+ <div class="menu" id="menu"><button onclick="newChat();toggleMenu()">چت جدید</button><button onclick="clearChat();toggleMenu()">پاک کردن این چت</button><button onclick="open3DPanel();toggleMenu()">🧊 ساخت مدل سه‌بعدی</button><button onclick="showAbout();toggleMenu()">درباره</button><button onclick="alert('جستجوی وب برای پرسش‌های خبری و به‌روز به‌صورت خودکار فعال است.')">🌐 جستجوی وب</button></div>
 </header>
 <section class="messages" id="messages"><div class="empty"><div><h1>Taha's Helper Bot</h1><p>هر چیزی می‌خواهی بنویس…</p></div></div></section>
+<section class="model3d-panel" id="model3dPanel" aria-label="ساخت مدل سه‌بعدی">
+ <div style="font-weight:700;margin-bottom:8px">🧊 ساخت مدل سه‌بعدی با V2Fun</div>
+ <input id="model3dPrompt" type="text" placeholder="مثلاً: یک ربات کوچک با بدنه فلزی و جزئیات آبی">
+ <div class="model3d-row"><label><input id="model3dTexture" type="checkbox" checked> بافت و رنگ داشته باشد</label><label>فرمت خروجی <select id="model3dFormat" style="width:auto;margin:0"><option value="glb">GLB</option><option value="obj">OBJ</option><option value="fbx">FBX</option></select></label></div>
+ <div class="model3d-note">ساخت مدل به اعتبار V2Fun نیاز دارد. ساخت مدل پایه معمولاً ۲۰ اعتبار و افزودن بافت ۲۰ اعتبار دیگر مصرف می‌کند؛ تبدیل فرمت هم ممکن است ۵ اعتبار مصرف کند.</div>
+ <div class="model3d-row"><button id="model3dGo" onclick="generate3DModel()">ساخت مدل</button><button class="secondary" onclick="close3DPanel()">بستن</button><span id="model3dStatus" class="model3d-note"></span></div>
+</section>
 <div class="composer-wrap">
- <div class="image-panel" id="model3dPanel" style="display:none;flex-wrap:wrap"><input id="model3dPrompt" placeholder="توضیح مدل سه‌بعدی؛ مثلاً یک ربات کوچک با جزئیات زیاد" style="flex:1;min-width:180px"><input id="model3dImage" type="file" accept="image/png,image/jpeg,image/webp" style="max-width:170px;color:#bbb;font-size:11px"><select id="model3dFormat" style="background:#0f0f13;color:#fff;border:1px solid #30303a;border-radius:9px;padding:9px"><option value="GLB">GLB</option><option value="FBX">FBX</option><option value="OBJ">OBJ</option><option value="STL">STL</option><option value="GLTF">GLTF</option><option value="USDZ">USDZ</option><option value="3MF">3MF</option></select><label style="font-size:12px;display:flex;gap:5px;align-items:center"><input id="model3dRig" type="checkbox"> Rigging خودکار</label><button onclick="generate3DModel()">ساخت مدل ۳بعدی</button><button onclick="toggle3DPanel()">×</button><div id="model3dResult" style="width:100%;font-size:12px;color:#ccc"></div></div><div class="image-panel" id="imagePanel"><input id="imagePrompt" placeholder="مثلاً: یک شهر آینده‌نگر در شب، سبک سینمایی"><button onclick="generateImage()">ساخت تصویر</button><button onclick="toggleImagePanel()">×</button></div><div class="image-panel" id="videoPanel"><input id="videoPrompt" placeholder="مثلاً: یک آبشار در جنگل، حرکت دوربین سینمایی"><button onclick="generateVideo()">ساخت ویدیو</button><button onclick="toggleVideoPanel()">×</button></div> <div class="file-pill" id="filePill"></div>
+ <div class="image-panel" id="imagePanel"><input id="imagePrompt" placeholder="مثلاً: یک شهر آینده‌نگر در شب، سبک سینمایی"><button onclick="generateImage()">ساخت تصویر</button><button onclick="toggleImagePanel()">×</button></div><div class="image-panel" id="videoPanel"><input id="videoPrompt" placeholder="مثلاً: یک آبشار در جنگل، حرکت دوربین سینمایی"><button onclick="generateVideo()">ساخت ویدیو</button><button onclick="toggleVideoPanel()">×</button></div> <div class="file-pill" id="filePill"></div>
  <div class="composer">
   <input id="file" class="file-input" type="file" accept="*/*" onchange="filePicked(this)">
   <button class="attach" title="ارسال فایل" onclick="document.getElementById('file').click()">📎</button>
-  <button class="imagegen" id="imageGenBtn" title="ساخت تصویر" onclick="toggleImagePanel()">🎨</button><button class="imagegen" id="videoGenBtn" title="ساخت ویدیو" onclick="toggleVideoPanel()">🎬</button><button class="imagegen" id="model3dBtn" title="ساخت مدل سه‌بعدی" onclick="toggle3DPanel()">🧊</button>
+  <button class="imagegen" id="imageGenBtn" title="ساخت تصویر" onclick="toggleImagePanel()">🎨</button><button class="imagegen" id="videoGenBtn" title="ساخت ویدیو" onclick="toggleVideoPanel()">🎬</button>
   <textarea id="input" placeholder="پیامت را بنویس..." rows="1"></textarea>
   <button class="mic" id="mic" title="ضبط صدا" onclick="toggleRecording()">🎙️</button>
   <button class="send" id="send" title="ارسال" onclick="sendMessage()">↑</button>
  </div>
- <div class="build-card" id="buildCard" hidden><div class="build-title">معراج در حال ساخت پروژه است</div><div class="road"></div><div class="build-stage" id="buildStage">در حال طراحی ساختار پروژه…</div><div class="build-dots"><i></i><i></i><i></i></div></div><div class="status" id="status">آماده <button id="cancelBtn" class="cancel-btn" onclick="cancelRequest()">توقف</button></div>
+ <div class="build-card" id="buildCard" hidden><div class="build-title">معراج در حال ساخت پروژه است</div><div class="road"></div><div class="build-stage" id="buildStage">در حال طراحی ساختار پروژه…</div><button id="buildPreviewBtn" class="preview-btn" type="button" disabled style="margin-top:9px;opacity:.55">پیش‌نمایش پس از آماده‌شدن فعال می‌شود</button><div class="build-dots"><i></i><i></i><i></i></div></div><div class="status" id="status">آماده <button id="cancelBtn" class="cancel-btn" onclick="cancelRequest()">توقف</button></div>
 </div>
 </main>
 </div>
 <script>
-let messages=[],busy=false,currentChatId=null,mediaRecorder=null,audioChunks=[],recording=false,activeController=null,lastFailedPrompt="";
+let messages=[],busy=false,currentChatId=null,mediaRecorder=null,audioChunks=[],recording=false,activeController=null;
 const input=document.getElementById('input');
 input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,160)+'px'});
 input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}});
@@ -1062,10 +1034,10 @@ function toggleSide(){document.getElementById('sidebar').classList.toggle('open'
 function toggleMenu(){document.getElementById('menu').classList.toggle('open')}
 function toggleImagePanel(){const p=document.getElementById('imagePanel');const b=document.getElementById('imageGenBtn');p.classList.toggle('open');b.classList.toggle('active');if(p.classList.contains('open'))document.getElementById('imagePrompt').focus()}
 function toggleVideoPanel(){const p=document.getElementById('videoPanel');const b=document.getElementById('videoGenBtn');p.classList.toggle('open');b.classList.toggle('active');if(p.classList.contains('open'))document.getElementById('videoPrompt').focus()}
-function cancelRequest(){if(activeController){const c=activeController;activeController=null;c.abort();document.getElementById('status').textContent='درخواست متوقف شد';setBusy(false);stopBuildAnimation();}}
+function cancelRequest(){if(activeController){activeController.abort();document.getElementById('status').textContent='درخواست متوقف شد';}}
 function newChat(){messages=[];currentChatId=null;render();input.value='';document.getElementById('file').value='';document.getElementById('filePill').textContent='';input.focus();document.getElementById('status').textContent='چت جدید';loadHistory()}
 function clearChat(){if(!currentChatId){newChat();return} fetch('/api/chats/'+currentChatId,{method:'DELETE'}).finally(()=>newChat())}
-function showAbout(){alert("Taha's Helper Bot\nچت، تاریخچه دائمی، فایل و تبدیل صدا به متن\n\nارتباط با پشتیبان\nتلفن: 09030747571\nایمیل: tahakhoahkhoo@gmail.com")}
+function showAbout(){alert("Taha's Helper Bot\nچت، تاریخچه دائمی، فایل و تبدیل صدا به متن")}
 function filePicked(el){if(el.files.length){document.getElementById('filePill').textContent='📎 '+el.files[0].name;document.getElementById('status').textContent='فایل آماده ارسال است'}}
 function addMessage(role,text,extra={}){messages.push({role,content:text,...extra});render()}
 function escapeHtml(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
@@ -1084,32 +1056,32 @@ function renderRichText(text,bubble){
  const after=raw.slice(last);if(after){const div=document.createElement('div');div.innerHTML=escapeHtml(after).replace(/\n/g,'<br>');bubble.appendChild(div)}
 }
 function copyCodeBlock(code,btn){const done=()=>{const old=btn.textContent;btn.textContent='کپی شد ✓';setTimeout(()=>btn.textContent=old,1200)};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(code).then(done).catch(()=>{fallbackCopy(code);done()})}else{fallbackCopy(code);done()}}
-function render(){const box=document.getElementById('messages');if(!messages.length){box.innerHTML="<div class='empty'><div><h1>Taha's Helper Bot</h1><p>هر چیزی می‌خواهی بنویس…</p></div></div>";return}box.innerHTML='';messages.forEach((m,idx)=>{const row=document.createElement('div');row.className='msg '+m.role;row.innerHTML='<div class="avatar">'+(m.role==='user'?'شما':'م')+'</div><div class="bubble"></div>';const bubble=row.querySelector('.bubble');renderRichText(m.content,bubble);if(m.image_url){const img=document.createElement('img');img.className='generated-image';img.src=m.image_url;img.alt='تصویر';img.loading='lazy';bubble.appendChild(img);const tools=document.createElement('div');tools.className='image-tools';const dl=document.createElement('a');dl.className='msg-action image-download';dl.textContent='⬇️ دانلود تصویر';let downloadUrl=m.image_url;if(typeof downloadUrl==='string'&&downloadUrl.startsWith('/generated/'))downloadUrl='/generated-download/'+downloadUrl.substring('/generated/'.length);dl.href=downloadUrl;dl.setAttribute('download','meraj-image.png');tools.appendChild(dl);bubble.appendChild(tools);const cap=document.createElement('div');cap.className='image-caption';cap.textContent='تصویر آماده است';bubble.appendChild(cap)}if(m.video_url){const video=document.createElement('video');video.className='generated-video';video.controls=true;video.playsInline=true;video.src=m.video_url;bubble.appendChild(video);const cap=document.createElement('div');cap.className='image-caption';cap.textContent='ویدیو آماده است';bubble.appendChild(cap)}if(m.file_url){const tools=document.createElement('div');tools.className='file-tools';const dl=document.createElement('a');dl.className='msg-action file-download';dl.textContent='📁 دریافت فایل'+(m.file_name?' — '+m.file_name:'');dl.href=m.file_url;dl.setAttribute('download',m.file_name||'meraj-file');tools.appendChild(dl);bubble.appendChild(tools)}if(m.code_bundle){const tools=document.createElement('div');tools.className='code-bundle-tools';const dl=document.createElement('a');dl.className='msg-action file-download';dl.href=m.code_bundle.file_url||m.file_url;dl.textContent=(m.code_bundle.files&&m.code_bundle.files.length>1?'📦 دانلود همه فایل‌ها (ZIP)':'⬇️ دانلود فایل');dl.setAttribute('download','project.zip');tools.appendChild(dl);bubble.appendChild(tools)}if(m.role==='assistant'&&/^(❌|⏱️|⚠️)/.test(m.content||'')){const retry=document.createElement('button');retry.className='retry-btn';retry.textContent='↻ تلاش مجدد';retry.type='button';retry.onclick=retryLastRequest;bubble.appendChild(retry)}if(m.role==='assistant'&&/^(❌|⏱️|⚠️)/.test(m.content||'')){const retry=document.createElement('button');retry.className='retry-btn';retry.textContent='↻ تلاش مجدد';retry.type='button';retry.onclick=retryLastRequest;bubble.appendChild(retry)}if(m.role==='assistant'){const actions=document.createElement('div');actions.className='msg-actions';actions.innerHTML='<button class="msg-action" onclick="copyMsg('+idx+',this)">کپی</button><button class="msg-action" onclick="shareMsg('+idx+')">اشتراک‌گذاری</button>';bubble.appendChild(actions);if(Array.isArray(m.sources)&&m.sources.length){const web=document.createElement('div');web.className='sources';web.innerHTML='<div class="web-badge">🌐 منابع وب</div><div class="sources-title">منابع استفاده‌شده:</div>';m.sources.forEach((src,i)=>{const a=document.createElement('a');a.className='source-link';a.href=src.url;a.target='_blank';a.rel='noopener noreferrer';a.textContent='['+(i+1)+'] '+src.title;web.appendChild(a)});bubble.appendChild(web)}}box.appendChild(row)});box.scrollTop=box.scrollHeight}
+function render(){const box=document.getElementById('messages');if(!messages.length){box.innerHTML="<div class='empty'><div><h1>Taha's Helper Bot</h1><p>هر چیزی می‌خواهی بنویس…</p></div></div>";return}box.innerHTML='';messages.forEach((m,idx)=>{const row=document.createElement('div');row.className='msg '+m.role;row.innerHTML='<div class="avatar">'+(m.role==='user'?'شما':'م')+'</div><div class="bubble"></div>';const bubble=row.querySelector('.bubble');renderRichText(m.content,bubble);if(m.image_url){const img=document.createElement('img');img.className='generated-image';img.src=m.image_url;img.alt='تصویر';img.loading='lazy';bubble.appendChild(img);const tools=document.createElement('div');tools.className='image-tools';const dl=document.createElement('a');dl.className='msg-action image-download';dl.textContent='⬇️ دانلود تصویر';let downloadUrl=m.image_url;if(typeof downloadUrl==='string'&&downloadUrl.startsWith('/generated/'))downloadUrl='/generated-download/'+downloadUrl.substring('/generated/'.length);dl.href=downloadUrl;dl.setAttribute('download','meraj-image.png');tools.appendChild(dl);bubble.appendChild(tools);const cap=document.createElement('div');cap.className='image-caption';cap.textContent='تصویر آماده است';bubble.appendChild(cap)}if(m.video_url){const video=document.createElement('video');video.className='generated-video';video.controls=true;video.playsInline=true;video.src=m.video_url;bubble.appendChild(video);const cap=document.createElement('div');cap.className='image-caption';cap.textContent='ویدیو آماده است';bubble.appendChild(cap)}if(m.file_url){const tools=document.createElement('div');tools.className='file-tools';const dl=document.createElement('a');dl.className='msg-action file-download';dl.textContent='📁 دریافت فایل'+(m.file_name?' — '+m.file_name:'');dl.href=m.file_url;dl.setAttribute('download',m.file_name||'meraj-file');tools.appendChild(dl);bubble.appendChild(tools)}if(m.code_bundle){const tools=document.createElement('div');tools.className='code-bundle-tools';const dl=document.createElement('a');dl.className='msg-action file-download';dl.href=m.code_bundle.file_url||m.file_url;dl.textContent=(m.code_bundle.files&&m.code_bundle.files.length>1?'📦 دانلود همه فایل‌ها (ZIP)':'⬇️ دانلود فایل');dl.setAttribute('download','project.zip');tools.appendChild(dl);if(m.code_bundle.preview_url){const preview=document.createElement('button');preview.className='preview-btn';preview.textContent='▶ باز کردن پیش‌نمایش';preview.onclick=()=>openPreview(m.code_bundle.preview_url);tools.appendChild(preview)}bubble.appendChild(tools)}if(m.role==='assistant'){const actions=document.createElement('div');actions.className='msg-actions';actions.innerHTML='<button class="msg-action" onclick="copyMsg('+idx+',this)">کپی</button><button class="msg-action" onclick="shareMsg('+idx+')">اشتراک‌گذاری</button>';bubble.appendChild(actions);if(Array.isArray(m.sources)&&m.sources.length){const web=document.createElement('div');web.className='sources';web.innerHTML='<div class="web-badge">🌐 منابع وب</div><div class="sources-title">منابع استفاده‌شده:</div>';m.sources.forEach((src,i)=>{const a=document.createElement('a');a.className='source-link';a.href=src.url;a.target='_blank';a.rel='noopener noreferrer';a.textContent='['+(i+1)+'] '+src.title;web.appendChild(a)});bubble.appendChild(web)}}box.appendChild(row)});box.scrollTop=box.scrollHeight}
 function copyMsg(i,btn){const text=messages[i]?.content||'';const done=()=>{if(btn){const old=btn.textContent;btn.textContent='کپی شد ✓';setTimeout(()=>btn.textContent=old,1200)}};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(()=>{fallbackCopy(text);done()})}else{fallbackCopy(text);done()}}
 function fallbackCopy(text){const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove()}
 async function shareMsg(i){const text=messages[i]?.content||'';if(navigator.share){try{await navigator.share({title:"Taha's Helper Bot",text:text});return}catch(e){}}fallbackCopy(text);alert('متن پاسخ کپی شد؛ حالا می‌توانی آن را در هر برنامه‌ای به اشتراک بگذاری.')}
 function setBusy(v){
  busy=v;
- const sendBtn=document.getElementById('send'); if(sendBtn){sendBtn.disabled=false;sendBtn.title=v?'توقف پاسخ':'ارسال';sendBtn.setAttribute('aria-label',v?'توقف پاسخ':'ارسال');sendBtn.classList.toggle('stop-mode',v);sendBtn.textContent=v?'■':'↑';}
+ const sendBtn=document.getElementById('send'); if(sendBtn)sendBtn.disabled=v;
  const micBtn=document.getElementById('mic'); if(micBtn)micBtn.disabled=v;
  const cancelBtn=document.getElementById('cancelBtn'); if(cancelBtn)cancelBtn.classList.toggle('show',v);
- const status=document.getElementById('status'); if(status&&!v&&status.textContent.includes('در حال'))status.textContent='آماده';
+ const status=document.getElementById('status'); if(status&&!v)status.textContent='آماده';
 }
 async function saveLocalState(){try{if(messages.length) localStorage.setItem('meraj_last_chat',JSON.stringify({id:currentChatId,messages}));}catch(e){}}
-let buildTimer=null,buildStageIndex=0,buildStages=[];
+let buildTimer=null,buildStageIndex=0;
 function isCodeBuildRequest(text){return /\b(html|css|javascript|python|typescript|react|website|web app|game|project|code|program)\b|کد|برنامه|پروژه|سایت|بازی|اپلیکیشن|اچ.?تی.?ام.?ال/i.test(text||'')}
 function startBuildAnimation(text){
- const card=document.getElementById('buildCard');if(!card)return;
- const t=(text||'').toLowerCase();buildStages=['در حال طراحی ساختار پروژه…','در حال ساخت رابط کاربری…','در حال پیاده‌سازی منطق برنامه…','در حال اتصال فایل‌ها و وابستگی‌ها…','در حال بررسی و آماده‌سازی خروجی…'];
- if(/game|بازی|فیزیک|physics|unity|godot/i.test(t))buildStages=['در حال طراحی ساختار بازی…','در حال ساخت صحنه‌ها و رابط کاربری…','در حال پیاده‌سازی کنترل‌ها و حرکت…','در حال ساخت فیزیک و برخوردها…','در حال اتصال سیستم امتیاز و رویدادها…','در حال بررسی و آماده‌سازی فایل‌ها…'];
- if(/html|website|سایت|صفحه وب|اچ.?تی.?ام.?ال/i.test(t))buildStages=['در حال ساخت ساختار HTML…','در حال طراحی ظاهر و CSS…','در حال پیاده‌سازی تعاملات JavaScript…','در حال اتصال فایل‌ها…','در حال آماده‌سازی خروجی…'];
- buildStageIndex=0;document.getElementById('buildStage').textContent=buildStages[0];card.hidden=false;
- clearInterval(buildTimer);buildTimer=setInterval(()=>{buildStageIndex=Math.min(buildStageIndex+1,buildStages.length-1);document.getElementById('buildStage').textContent=buildStages[buildStageIndex]},2400);
+ const card=document.getElementById('buildCard');if(!card)return;const pb=document.getElementById('buildPreviewBtn');if(pb){pb.disabled=true;pb.style.opacity='.55';pb.textContent='پیش‌نمایش پس از آماده‌شدن فعال می‌شود';pb.onclick=null;}
+ const t=(text||'').toLowerCase();let stages=['در حال طراحی ساختار پروژه…','در حال ساخت رابط کاربری…','در حال پیاده‌سازی منطق برنامه…','در حال اتصال فایل‌ها و وابستگی‌ها…','در حال بررسی و آماده‌سازی خروجی…'];
+ if(/game|بازی|فیزیک|physics|unity|godot/i.test(t))stages=['در حال طراحی ساختار بازی…','در حال ساخت صحنه‌ها و رابط کاربری…','در حال پیاده‌سازی کنترل‌ها و حرکت…','در حال ساخت فیزیک و برخوردها…','در حال اتصال سیستم امتیاز و رویدادها…','در حال بررسی و آماده‌سازی فایل‌ها…'];
+ if(/html|website|سایت|صفحه وب|اچ.?تی.?ام.?ال/i.test(t))stages=['در حال ساخت ساختار HTML…','در حال طراحی ظاهر و CSS…','در حال پیاده‌سازی تعاملات JavaScript…','در حال اتصال فایل‌ها…','در حال آماده‌سازی پیش‌نمایش…'];
+ buildStageIndex=0;document.getElementById('buildStage').textContent=stages[0];card.hidden=false;
+ clearInterval(buildTimer);buildTimer=setInterval(()=>{buildStageIndex=(buildStageIndex+1)%stages.length;document.getElementById('buildStage').textContent=stages[buildStageIndex]},2400);
 }
-function stopBuildAnimation(success=false){clearInterval(buildTimer);buildTimer=null;const c=document.getElementById('buildCard');if(c){if(success){const st=document.getElementById('buildStage');if(st)st.textContent='ساخت تمام شد؛ فایل خروجی آماده است.';setTimeout(()=>{c.hidden=true},2500)}else c.hidden=true}}
-function retryLastRequest(){if(busy)return;let i=messages.length-1;if(i>=0&&messages[i].role==='assistant'&&/^(❌|⏱️|⚠️)/.test(messages[i].content||''))messages.pop();let j=messages.length-1;while(j>=0&&messages[j].role!=='user')j--;if(j<0)return;const previous=messages.splice(j,1)[0];input.value=String(previous.content||'').replace(/^\[(?:تصویر|فایل) پیوست شد:.*?\]$/gm,'').trim();render();sendMessage()}
+function stopBuildAnimation(){clearInterval(buildTimer);buildTimer=null;const c=document.getElementById('buildCard');if(c)c.hidden=true}
+function openPreview(url){const old=document.getElementById('htmlPreview');if(old)old.remove();const wrap=document.createElement('div');wrap.id='htmlPreview';wrap.className='preview-wrap';const bar=document.createElement('div');bar.style.cssText='display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#17171c;color:#ddd;font-size:12px';bar.textContent='پیش‌نمایش HTML';const close=document.createElement('button');close.className='msg-action';close.textContent='بستن پیش‌نمایش';close.onclick=()=>wrap.remove();bar.appendChild(close);const frame=document.createElement('iframe');frame.src=url;frame.setAttribute('sandbox','allow-scripts');frame.loading='lazy';wrap.append(bar,frame);document.getElementById('messages').appendChild(wrap);wrap.scrollIntoView({behavior:'smooth',block:'start'});}
 async function sendMessage(){
- if(busy){cancelRequest();return;}
+ if(busy)return;
  const text=input.value.trim();
  const file=document.getElementById('file').files[0];
  if(!text && !file)return;
@@ -1130,13 +1102,13 @@ async function sendMessage(){
   addMessage('user',shownText);input.value='';input.style.height='auto';
   const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:currentChatId,messages}),signal:activeController.signal});
   const data=await r.json();if(!r.ok)throw new Error(data.error||'خطای سرور');
-  currentChatId=data.chat_id||currentChatId;if(isCodeBuildRequest(text))stopBuildAnimation(true);addMessage('assistant',data.reply||'پاسخی دریافت نشد.',{sources:data.sources||[],file_url:data.file_url||'',file_name:data.file_name||'',code_bundle:data.code_bundle||null});
+  currentChatId=data.chat_id||currentChatId;addMessage('assistant',data.reply||'پاسخی دریافت نشد.',{sources:data.sources||[],file_url:data.file_url||'',file_name:data.file_name||'',code_bundle:data.code_bundle||null});if(data.code_bundle&&data.code_bundle.preview_url){const pb=document.getElementById('buildPreviewBtn');if(pb){pb.disabled=false;pb.style.opacity='1';pb.textContent='▶ باز کردن پیش‌نمایش HTML';pb.onclick=()=>openPreview(data.code_bundle.preview_url);}}
   document.getElementById('modelLabel').textContent=data.model||'';
   // History/local persistence are background tasks. They must never keep the composer locked.
   setBusy(false);
   loadHistory().catch(()=>{}); saveLocalState().catch(()=>{});
- }catch(e){if(e.name==='AbortError'){if(document.getElementById('status').textContent!=='درخواست متوقف شد')addMessage('assistant','⏱️ درخواست متوقف شد یا زمان پاسخ تمام شد. می‌توانی دوباره تلاش کنی.')}else addMessage('assistant','❌ '+e.message)}
- finally{clearTimeout(timer);activeController=null;if(!document.getElementById('buildCard').hidden)stopBuildAnimation(false);setBusy(false);input.focus()}
+ }catch(e){if(e.name==='AbortError')addMessage('assistant','⏱️ پاسخ طول کشید و متوقف شد. دوباره ارسال کن.');else addMessage('assistant','❌ '+e.message)}
+ finally{clearTimeout(timer);activeController=null;stopBuildAnimation();setBusy(false);input.focus()}
 }
 async function generateImage(){
  if(busy)return;const p=document.getElementById('imagePrompt').value.trim();if(!p){document.getElementById('status').textContent='توضیح تصویر را بنویس.';return}
@@ -1155,18 +1127,18 @@ async function generateVideo(){
  if(busy)return;
  const p=document.getElementById('videoPrompt').value.trim();
  if(!p){document.getElementById('status').textContent='توضیح ویدیو را بنویس.';return}
- setBusy(true);document.getElementById('status').textContent='🎬 در حال ارسال درخواست به Magic Hour…';activeController=new AbortController();
+ setBusy(true);document.getElementById('status').textContent='🎬 در حال ارسال درخواست به Vadoo AI…';activeController=new AbortController();
  const timer=setTimeout(()=>activeController&&activeController.abort(),90000);
  try{
-  const r=await fetch('/api/generate-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:p,duration:5,aspect_ratio:'16:9'}),signal:activeController.signal});
+  const r=await fetch('/api/generate-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:p,duration:'30-60',aspect_ratio:'16:9'}),signal:activeController.signal});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d.error||('HTTP '+r.status+' - ساخت ویدیو ناموفق بود')));
   if(d.status==='completed'&&d.url){
    messages.push({role:'assistant',content:'ویدیو ساخته شد\n\nپرامپت: '+p,video_url:d.url,video_prompt:p,sources:[]});
    render();
   }else{
-   messages.push({role:'assistant',content:'🎬 ویدیو در Magic Hour در حال ساخته‌شدن است…\n\nپرامپت: '+p,video_prompt:p,sources:[],video_job_id:d.job_id});
+   messages.push({role:'assistant',content:'🎬 ویدیو در Vadoo در حال ساخته‌شدن است…\n\nپرامپت: '+p,video_prompt:p,sources:[],video_job_id:d.job_id});
    const pendingIndex=messages.length-1;render();
-   document.getElementById('status').textContent='🎬 Magic Hour در حال ساخت ویدیو است…';
+   document.getElementById('status').textContent='🎬 Vadoo در حال ساخت ویدیو است…';
    const started=Date.now();
    let completed=false;
    while(Date.now()-started<12*60*1000){
@@ -1179,14 +1151,9 @@ async function generateVideo(){
      delete messages[pendingIndex].video_job_id;
      render();completed=true;break;
     }
-    if(sd.status==='error'){
-     messages[pendingIndex].content='❌ ساخت ویدیو کامل نشد: '+(sd.error||sd.details||'خطای نامشخص از Magic Hour');
-     delete messages[pendingIndex].video_job_id;
-     render();completed=true;break;
-    }
-    document.getElementById('status').textContent='🎬 Magic Hour در حال ساخت ویدیو است…';
+    document.getElementById('status').textContent='🎬 Vadoo در حال ساخت ویدیو است…';
    }
-   if(!completed){messages[pendingIndex].content='⏳ درخواست ویدیو ثبت شد، اما Magic Hour هنوز لینک نهایی را نفرستاده است. بعداً دوباره چت را باز کن.';render();}
+   if(!completed){messages[pendingIndex].content='⏳ درخواست ویدیو ثبت شد، اما Vadoo هنوز لینک نهایی را نفرستاده است. بعداً دوباره چت را باز کن.';render();}
   }
   document.getElementById('videoPrompt').value='';toggleVideoPanel();
   if(!currentChatId)currentChatId=crypto.randomUUID?crypto.randomUUID():String(Date.now());
@@ -1294,189 +1261,20 @@ async function transcribe(blob,filename){
  }catch(e){setBusy(false);document.getElementById('status').textContent='آماده';alert('❌ '+e.message)}
 }
 
-
-let model3dTimer=null,model3dStartedAt=0;
-function toggle3DPanel(){const p=document.getElementById('model3dPanel');p.style.display=p.style.display==='flex'?'none':'flex';if(p.style.display==='flex')document.getElementById('model3dPrompt').focus()}
-async function generate3DModel(retryJobId=null){
- const result=document.getElementById('model3dResult'), prompt=document.getElementById('model3dPrompt').value.trim(), file=document.getElementById('model3dImage').files[0];
- if(!retryJobId&&!prompt&&!file){result.textContent='توضیح بنویس یا عکس انتخاب کن.';return}
- if(model3dTimer)clearTimeout(model3dTimer);result.textContent='در حال ارسال درخواست به Tripo…';
- try{
-  let response;
-  if(retryJobId){response=await fetch('/api/3d/retry',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:retryJobId})});}
-  else {const fd=new FormData();fd.append('prompt',prompt);fd.append('rig',document.getElementById('model3dRig').checked?'true':'false');fd.append('format',document.getElementById('model3dFormat').value);if(file)fd.append('image',file);response=await fetch('/api/3d/generate',{method:'POST',body:fd});}
-  const data=await response.json();if(!response.ok)throw new Error(data.error||'درخواست ناموفق بود');model3dStartedAt=Date.now();poll3DStatus(data.job_id);
- }catch(e){result.textContent='❌ '+e.message}
+function open3DPanel(){document.getElementById('model3dPanel').classList.add('open');document.getElementById('model3dPrompt').focus()}
+function close3DPanel(){document.getElementById('model3dPanel').classList.remove('open')}
+async function generate3DModel(){
+ const prompt=document.getElementById('model3dPrompt').value.trim();if(!prompt){alert('توضیح مدل سه‌بعدی را بنویس.');return}
+ const btn=document.getElementById('model3dGo'),status=document.getElementById('model3dStatus');btn.disabled=true;status.textContent='در حال ساخت مدل سه‌بعدی… ممکن است چند دقیقه طول بکشد.';document.getElementById('status').textContent='در حال ساخت مدل سه‌بعدی…';
+ try{const r=await fetch('/api/generate-3d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,with_texture:document.getElementById('model3dTexture').checked,format:document.getElementById('model3dFormat').value})});let d={};try{d=await r.json()}catch(e){}if(!r.ok)throw new Error(d.error||'ساخت مدل ناموفق بود');
+  status.innerHTML='مدل آماده شد: <a style="color:#19c37d" href="'+d.url+'">دانلود '+d.format.toUpperCase()+'</a>';addMessage('assistant','🧊 مدل سه‌بعدی آماده شد.\nفرمت: '+d.format.toUpperCase()+'\nدانلود: '+location.origin+d.url);close3DPanel();
+ }catch(e){status.textContent='خطا: '+e.message}finally{btn.disabled=false;document.getElementById('status').textContent='آماده'}
 }
-async function poll3DStatus(jobId){
- const result=document.getElementById('model3dResult');
- try{
-  const r=await fetch('/api/3d/status/'+encodeURIComponent(jobId),{cache:'no-store'}),d=await r.json();if(!r.ok)throw new Error(d.error||'خطا در دریافت وضعیت');
-  const p=Number.isFinite(d.progress)?` · ${Math.round(d.progress)}%`:'';
-  result.textContent=(d.stage||({'queued':'در صف…','running':'در حال ساخت…'}[d.status]||'در حال پردازش…'))+p;
-  if(d.status==='success'&&d.download_url){result.innerHTML='✅ مدل سه‌بعدی آماده شد ('+escapeHtml((d.format||'GLB'))+'). <a class="model3d-download" href="'+escapeHtml(d.download_url)+'" download>دانلود مدل</a>';document.getElementById('model3dImage').value='';return}
-  if(d.status==='failed'||d.status==='timeout'){result.textContent='❌ '+(d.error||'ساخت ناموفق بود.');const b=document.createElement('button');b.className='retry-btn';b.textContent='تلاش دوباره';b.onclick=()=>generate3DModel(jobId);result.appendChild(document.createElement('br'));result.appendChild(b);return}
-  model3dTimer=setTimeout(()=>poll3DStatus(jobId),2200);
- }catch(e){result.textContent='❌ '+e.message;const b=document.createElement('button');b.className='retry-btn';b.textContent='بررسی دوباره';b.onclick=()=>poll3DStatus(jobId);result.appendChild(document.createElement('br'));result.appendChild(b)}
-}
-
 async function loadInfo(){try{let r=await fetch('/health',{cache:'no-store'});let d=await r.json();if(!r.ok)throw new Error('health');document.getElementById('modelLabel').textContent=d.model||'● آنلاین'}catch(e){document.getElementById('modelLabel').textContent='● آنلاین'}}
 loadInfo();loadHistory();
 </script>
 </body>
 </html>'''
-
-
-# ---------------- Tripo AI 3D generation ----------------
-def _tripo_headers():
-    if not TRIPO_API_KEY:
-        raise RuntimeError("کلید TRIPO_API_KEY در تنظیمات Environment سرور تنظیم نشده است.")
-    return {"Authorization": f"Bearer {TRIPO_API_KEY}", "Content-Type": "application/json"}
-
-
-def _tripo_json(response):
-    try:
-        payload = response.json()
-    except Exception:
-        payload = {}
-    if not response.ok or (isinstance(payload, dict) and payload.get("code", 0) not in (0, None)):
-        msg = payload.get("message") or payload.get("error") or f"خطای Tripo ({response.status_code})"
-        suggestion = payload.get("suggestion")
-        if suggestion: msg += " — " + str(suggestion)
-        raise RuntimeError(str(msg)[:700])
-    data = payload.get("data", {}) if isinstance(payload, dict) else {}
-    if not isinstance(data, dict): raise RuntimeError("پاسخ نامعتبر از سرویس Tripo دریافت شد.")
-    return data
-
-
-def _tripo_create(path, payload):
-    r = requests.post(TRIPO_API_BASE + path, headers=_tripo_headers(), json=payload, timeout=45)
-    data = _tripo_json(r)
-    task_id = data.get("task_id")
-    if not task_id: raise RuntimeError("شناسهٔ کار از Tripo دریافت نشد.")
-    return str(task_id)
-
-
-def _tripo_upload_image(file_storage):
-    name = (file_storage.filename or "image.png").lower()
-    ext = Path(name).suffix.lower().lstrip(".")
-    allowed = {"png", "jpg", "jpeg", "webp"}
-    if ext not in allowed: raise RuntimeError("فرمت عکس باید PNG، JPG یا WebP باشد.")
-    raw = file_storage.read()
-    if not raw: raise RuntimeError("فایل عکس خالی است.")
-    if len(raw) > 20 * 1024 * 1024: raise RuntimeError("حجم عکس باید کمتر از ۲۰ مگابایت باشد.")
-    presign = _tripo_json(requests.post(TRIPO_API_BASE + "/files/presign", headers=_tripo_headers(), json={"format": "jpeg" if ext in ("jpg", "jpeg") else ext}, timeout=30))
-    upload_url, token = presign.get("presigned_url"), presign.get("file_token")
-    if not upload_url or not token: raise RuntimeError("آدرس بارگذاری عکس از Tripo دریافت نشد.")
-    put = requests.put(upload_url, data=raw, headers={"Content-Type": file_storage.mimetype or "application/octet-stream"}, timeout=90)
-    if not put.ok: raise RuntimeError(f"بارگذاری عکس در Tripo ناموفق بود ({put.status_code}).")
-    return str(token)
-
-
-def _tripo_task(task_id):
-    r = requests.get(TRIPO_API_BASE + "/tasks/" + quote(str(task_id), safe=""), headers={"Authorization": f"Bearer {TRIPO_API_KEY}"}, timeout=25)
-    return _tripo_json(r)
-
-
-def _tripo_download_result(url, filename):
-    if not isinstance(url, str) or not url.startswith("https://"):
-        raise RuntimeError("لینک خروجی مدل معتبر نیست.")
-    r = requests.get(url, timeout=90, stream=True)
-    r.raise_for_status()
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename)[:100]
-    target = FILES_DIR / safe
-    with target.open("wb") as out:
-        for chunk in r.iter_content(1024 * 1024):
-            if chunk: out.write(chunk)
-    return safe
-
-
-@app.post("/api/3d/generate")
-def tripo_generate():
-    try:
-        if not TRIPO_API_KEY: return jsonify(error="برای ساخت مدل سه‌بعدی، TRIPO_API_KEY را در Environment تنظیم کن."), 503
-        prompt = (request.form.get("prompt") or request.json.get("prompt", "") if request.is_json else request.form.get("prompt", "")).strip()
-        image = request.files.get("image")
-        if not prompt and not image: return jsonify(error="توضیح مدل را بنویس یا یک عکس انتخاب کن."), 400
-        if len(prompt) > 2000: return jsonify(error="توضیح مدل خیلی طولانی است (حداکثر ۲۰۰۰ نویسه)."), 400
-        rig = request.form.get("rig", "false").lower() in ("1", "true", "yes") if not request.is_json else bool(request.json.get("rig"))
-        out_format = (request.form.get("format", "GLB") if not request.is_json else request.json.get("format", "GLB")).upper()
-        if out_format not in {"GLB", "FBX", "OBJ", "STL", "GLTF", "USDZ", "3MF"}: out_format = "GLB"
-        if image:
-            token = _tripo_upload_image(image)
-            payload = {"input": token, "model": "v3.1-20260211", "texture": True, "pbr": True}
-            endpoint = "/generation/image-to-model"
-        else:
-            payload = {"prompt": prompt, "model": "v3.1-20260211", "texture": True, "pbr": True}
-            endpoint = "/generation/text-to-model"
-        task_id = _tripo_create(endpoint, payload)
-        local_id = uuid.uuid4().hex
-        TRIPO_JOBS[local_id] = {"task_id": task_id, "original_task_id": task_id, "phase": "generation", "status": "queued", "rig": rig, "format": out_format, "created": time.time(), "prompt": prompt, "filename": None, "download_url": None, "error": None, "phase_task_id": None}
-        return jsonify(job_id=local_id, status="queued", timeout_seconds=TRIPO_TIMEOUT_SECONDS)
-    except Exception as e:
-        return jsonify(error=str(e)), 502
-
-
-@app.get("/api/3d/status/<job_id>")
-def tripo_status(job_id):
-    job = TRIPO_JOBS.get(job_id)
-    if not job: return jsonify(error="کار پیدا نشد یا سرور دوباره راه‌اندازی شده است."), 404
-    if job["status"] in ("success", "failed", "timeout"):
-        return jsonify({k: v for k, v in job.items() if k not in ("task_id", "phase_task_id", "original_task_id", "prompt")})
-    if time.time() - job["created"] > TRIPO_TIMEOUT_SECONDS:
-        job["status"] = "timeout"; job["error"] = "زمان ساخت به ۱۵ دقیقه رسید. می‌توانی دوباره تلاش کنی." 
-        return jsonify({k: v for k, v in job.items() if k not in ("task_id", "phase_task_id", "original_task_id", "prompt")})
-    try:
-        data = _tripo_task(job["task_id"])
-        status = str(data.get("status", "running")).lower()
-        job["status"] = status
-        job["progress"] = data.get("progress") if isinstance(data.get("progress"), (int, float)) else None
-        job["stage"] = {"queued":"در صف ساخت…", "running":"در حال ساخت مدل سه‌بعدی…", "success":"مدل آماده شد", "failed":"ساخت مدل ناموفق بود", "cancelled":"کار لغو شد"}.get(status, "در حال پردازش…")
-        if status in ("failed", "cancelled", "banned"):
-            job["status"] = "failed"; job["error"] = data.get("message") or "سرویس نتوانست مدل را بسازد."
-        elif status == "success":
-            output = data.get("output") or {}
-            model_url = output.get("model_url") or output.get("pbr_model_url") or output.get("base_model_url")
-            if not model_url: raise RuntimeError("ساخت تمام شد، اما لینک فایل مدل در خروجی وجود ندارد.")
-            final_task_id = job["task_id"]
-            if job["phase"] == "generation" and job["rig"]:
-                check = _tripo_json(requests.post(TRIPO_API_BASE + "/animations/rig-check", headers=_tripo_headers(), json={"input": final_task_id}, timeout=40))
-                riggable = check.get("riggable", (check.get("output") or {}).get("riggable", False))
-                rig_type = check.get("rig_type") or (check.get("output") or {}).get("rig_type") or "biped"
-                if not riggable:
-                    raise RuntimeError("این مدل برای Rigging مناسب تشخیص داده نشد. دوباره با حالت کاراکتر ساده‌تر بساز یا Rigging را خاموش کن.")
-                rig_task = _tripo_create("/animations/rig", {"input": final_task_id, "model": "v3.0-20260909", "rig_type": rig_type, "spec": "mixamo", "out_format": "fbx" if job["format"] == "FBX" else "glb"})
-                job["task_id"] = rig_task; job["phase"] = "rigging"; job["status"] = "running"; job["progress"] = 0; job["stage"] = "مدل ساخته شد؛ در حال Rigging…"
-                return jsonify({k: v for k, v in job.items() if k not in ("task_id", "phase_task_id", "original_task_id", "prompt")})
-            fmt = job["format"]
-            if job["phase"] != "converting" and fmt not in ("GLB", "FBX"):
-                conv_task = _tripo_create("/models/convert", {"input": final_task_id, "format": fmt, "with_animation": bool(job["rig"]), "texture_size": 2048})
-                job["task_id"] = conv_task; job["phase"] = "converting"; job["status"] = "running"; job["progress"] = 0; job["stage"] = f"در حال تبدیل به {fmt}…"
-                return jsonify({k: v for k, v in job.items() if k not in ("task_id", "phase_task_id", "original_task_id", "prompt")})
-            safe_fmt = "glb" if fmt == "GLTF" else fmt.lower()
-            filename = f"tripo_{job_id}.{safe_fmt}"
-            job["filename"] = _tripo_download_result(model_url, filename)
-            job["download_url"] = "/generated-download-file/" + quote(job["filename"])
-            job["status"] = "success"; job["progress"] = 100; job["stage"] = "مدل آمادهٔ دانلود است"
-        return jsonify({k: v for k, v in job.items() if k not in ("task_id", "phase_task_id", "original_task_id", "prompt")})
-    except Exception as e:
-        job["status"] = "failed"; job["error"] = str(e)[:700]
-        return jsonify({k: v for k, v in job.items() if k not in ("task_id", "phase_task_id", "original_task_id", "prompt")})
-
-
-@app.post("/api/3d/retry")
-def tripo_retry():
-    body = request.get_json(silent=True) or {}
-    old = TRIPO_JOBS.get(str(body.get("job_id", "")))
-    if not old: return jsonify(error="درخواست قبلی پیدا نشد."), 404
-    # A retry creates a fresh job from the same text prompt; image retries require re-uploading the image.
-    if not old.get("prompt"): return jsonify(error="برای تلاش دوباره با عکس، لطفاً همان عکس را دوباره انتخاب و ارسال کن."), 400
-    try:
-        task_id = _tripo_create("/generation/text-to-model", {"prompt": old["prompt"], "model":"v3.1-20260211", "texture":True, "pbr":True})
-        new_id = uuid.uuid4().hex
-        TRIPO_JOBS[new_id] = {**old, "task_id":task_id, "original_task_id":task_id, "phase":"generation", "status":"queued", "created":time.time(), "filename":None, "download_url":None, "error":None}
-        return jsonify(job_id=new_id, status="queued", timeout_seconds=TRIPO_TIMEOUT_SECONDS)
-    except Exception as e: return jsonify(error=str(e)), 502
 
 
 @app.get("/")
@@ -1648,6 +1446,112 @@ def generated_download_file(filename):
     return send_file(safe, as_attachment=True, download_name=(safe.name.split("_", 2)[-1] or safe.name))
 
 
+def _v2fun_headers():
+    if not V2FUN_API_KEY:
+        raise RuntimeError("برای ساخت مدل سه‌بعدی، متغیر محیطی V2FUN_API_KEY را در Render تنظیم کن.")
+    return {"Authorization": f"Bearer {V2FUN_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
+
+
+def _v2fun_get_task(endpoint, task_uuid):
+    r = requests.get(f"{V2FUN_API_BASE}/{endpoint}/{task_uuid}", headers=_v2fun_headers(), timeout=45)
+    if not r.ok:
+        raise RuntimeError(f"V2Fun وضعیت کار را برنگرداند ({r.status_code}): {r.text[:400]}")
+    return r.json()
+
+
+def _v2fun_wait(endpoint, payload, timeout_seconds=240):
+    r = requests.post(f"{V2FUN_API_BASE}/{endpoint}", headers=_v2fun_headers(), json=payload, timeout=60)
+    if r.status_code not in (200, 201, 202):
+        detail = r.text[:700]
+        if r.status_code in (401, 403):
+            raise RuntimeError("کلید V2Fun نامعتبر است یا دسترسی API فعال نیست.")
+        if r.status_code == 402:
+            raise RuntimeError("اعتبار API در V2Fun کافی نیست؛ موجودی اعتبار را بررسی کن.")
+        raise RuntimeError(f"V2Fun خطا داد ({r.status_code}): {detail}")
+    try: data = r.json()
+    except ValueError: raise RuntimeError("V2Fun پاسخ JSON قابل خواندن برنگرداند.")
+    task_uuid = data.get("task_uuid") or data.get("task_id") or data.get("id")
+    if r.status_code == 200 and str(data.get("status", "")).upper() in ("COMPLETED", "SUCCESS", "SUCCEEDED"):
+        return data
+    if not task_uuid:
+        # Some synchronous responses return a direct result without task_uuid.
+        if data.get("result") or data.get("metadata") or data.get("downloads"):
+            return data
+        raise RuntimeError("V2Fun شناسه کار یا فایل خروجی را برنگرداند.")
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        status = str(data.get("status", "")).upper()
+        if status in ("COMPLETED", "SUCCESS", "SUCCEEDED"):
+            return data
+        if status in ("FAILED", "ERROR", "CANCELLED"):
+            raise RuntimeError("ساخت مدل در V2Fun ناموفق شد: " + str(data.get("error") or data.get("message") or status))
+        time.sleep(3)
+        data = _v2fun_get_task(endpoint, task_uuid)
+    raise RuntimeError("ساخت مدل هنوز تمام نشده است. لطفاً کمی بعد دوباره تلاش کن؛ درخواست جدید ممکن است اعتبار دیگری مصرف کند.")
+
+
+def _v2fun_download_url(value):
+    urls=[]
+    def walk(obj):
+        if isinstance(obj, dict):
+            for k,v in obj.items():
+                if isinstance(v, str) and (k.lower() in {"download_url", "url", "model_url", "asset_url"}) and v.startswith(("http://", "https://")):
+                    urls.append((k.lower(),v))
+                elif isinstance(v,(dict,list)): walk(v)
+        elif isinstance(obj,list):
+            for v in obj: walk(v)
+        elif isinstance(obj,str) and obj.startswith(("http://", "https://")) and any(ext in obj.lower() for ext in (".glb", ".obj", ".fbx", ".usdz")):
+            urls.append(("url",obj))
+    walk(value)
+    # Prefer explicit downloadable links, then a model URL.
+    for preferred in ("download_url", "model_url", "asset_url", "url"):
+        for k,u in urls:
+            if k == preferred: return u
+    return urls[0][1] if urls else None
+
+
+@app.post("/api/generate-3d")
+def api_generate_3d():
+    data = request.get_json(silent=True) or {}
+    prompt = str(data.get("prompt") or "").strip()
+    with_texture = bool(data.get("with_texture", True))
+    output_format = str(data.get("format") or "glb").lower().strip()
+    if not prompt: return jsonify(error="توضیح مدل سه‌بعدی را بنویس."), 400
+    if len(prompt) > 2000: return jsonify(error="توضیح مدل خیلی طولانی است؛ حداکثر ۲۰۰۰ نویسه."), 400
+    if output_format not in {"glb", "obj", "fbx"}: return jsonify(error="فرمت خروجی پشتیبانی نمی‌شود."), 400
+    try:
+        result = _v2fun_wait("3d_models/meshes", {"prompt": prompt, "with_texture": with_texture})
+        download_url = _v2fun_download_url(result)
+        if not download_url:
+            raise RuntimeError("کار تکمیل شد اما لینک دانلود در پاسخ V2Fun پیدا نشد.")
+        # If another format is requested, ask V2Fun to convert the generated GLB.
+        if output_format != "glb":
+            converted = _v2fun_wait("3d_models/conversions", {"input_model": download_url, "output_format": output_format}, timeout_seconds=180)
+            download_url = _v2fun_download_url(converted)
+            if not download_url: raise RuntimeError("تبدیل انجام شد اما لینک فایل تبدیل‌شده پیدا نشد.")
+        file_response = requests.get(download_url, timeout=90, stream=True)
+        if not file_response.ok: raise RuntimeError(f"دانلود مدل از V2Fun ناموفق بود ({file_response.status_code}).")
+        file_name = f"v2fun_{uuid.uuid4().hex[:12]}.{output_format}"
+        target = FILES_DIR / file_name
+        total = 0
+        with target.open("wb") as f:
+            for chunk in file_response.iter_content(1024*128):
+                if chunk:
+                    total += len(chunk)
+                    if total > 150 * 1024 * 1024:
+                        f.close(); target.unlink(missing_ok=True)
+                        raise RuntimeError("حجم مدل بیشتر از حد مجاز ۱۵۰ مگابایت است.")
+                    f.write(chunk)
+        if total == 0: target.unlink(missing_ok=True); raise RuntimeError("فایل خروجی خالی بود.")
+        return jsonify(ok=True, url=f"/generated-download-file/{file_name}", format=output_format, bytes=total)
+    except requests.RequestException as e:
+        print("[V2FUN NETWORK ERROR]", repr(e), flush=True)
+        return jsonify(error="اتصال به V2Fun یا دانلود مدل برقرار نشد؛ اینترنت و وضعیت سرویس را بررسی کن."), 502
+    except Exception as e:
+        print("[V2FUN 3D ERROR]", repr(e), flush=True)
+        return jsonify(error=str(e)), 502
+
+
 @app.post("/api/generate-image")
 def generate_image():
     data = request.get_json(silent=True) or {}
@@ -1678,7 +1582,7 @@ def generate_image():
 
 
 def _find_video_url(value):
-    """Find a video URL in a provider response with flexible field names."""
+    """Find a video URL in Vadoo webhook payloads with flexible field names."""
     if isinstance(value, dict):
         preferred = (
             "video_url", "videoUrl", "download_url", "downloadUrl",
@@ -1725,61 +1629,68 @@ def _find_video_id(value):
     return None
 
 
-def generate_video_file(prompt, duration=5, aspect_ratio="16:9"):
-    """Submit a text-to-video generation job to Magic Hour."""
+def generate_video_file(prompt, duration=30, aspect_ratio="16:9"):
+    """Generate a video through Vadoo AI's Text-to-Video API.
+
+    Vadoo returns a video id first and sends the final download URL to the
+    webhook configured in the user's Vadoo profile. The browser polls our
+    status endpoint until that webhook arrives.
+    """
     prompt = (prompt or "").strip()
     if not prompt:
         raise RuntimeError("توضیح ویدیو خالی است.")
-    if not MAGIC_HOUR_API_KEY:
-        raise RuntimeError("برای ساخت ویدیو باید MAGIC_HOUR_API_KEY را در Environment Variables تنظیم کنی.")
+    if not VADOO_API_KEY:
+        raise RuntimeError("برای ساخت ویدیو باید VADOO_API_KEY را در Environment Variables تنظیم کنی.")
 
-    try:
-        end_seconds = float(duration)
-    except (TypeError, ValueError):
-        end_seconds = 5.0
-    end_seconds = min(max(end_seconds, 3.0), 10.0)
-    ratio = aspect_ratio if aspect_ratio in {"16:9", "9:16", "1:1"} else "16:9"
+    # The Vadoo Text-to-Video API uses duration ranges such as 30-60.
+    duration_value = str(duration or "30-60")
+    if duration_value.isdigit():
+        seconds = int(duration_value)
+        duration_value = "30-60" if seconds <= 60 else "60-90"
+    elif duration_value not in {"30-60", "60-90", "90-120", "120-180"}:
+        duration_value = "30-60"
+
     payload = {
-        "name": "Taha's Helper Bot video",
-        "end_seconds": end_seconds,
-        "aspect_ratio": ratio,
-        "style": {"prompt": prompt[:4000]},
-        "model": "ltx-2.5",
-        "resolution": "480p",
-        "audio": True,
+        "topic": prompt[:4000],
+        "language": os.environ.get("VADOO_LANGUAGE", "English").strip() or "English",
+        "voice": os.environ.get("VADOO_VOICE", "Charlie").strip() or "Charlie",
+        "theme": os.environ.get("VADOO_THEME", "Hormozi_1").strip() or "Hormozi_1",
+        "duration": duration_value,
     }
+
     headers = {
-        "Authorization": f"Bearer {MAGIC_HOUR_API_KEY}",
+        "X-API-KEY": VADOO_API_KEY,
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
     try:
-        r = requests.post(f"{MAGIC_HOUR_API_BASE}/v1/text-to-video", headers=headers, json=payload, timeout=60)
+        r = requests.post(VADOO_API_URL, headers=headers, json=payload, timeout=60)
     except requests.RequestException as e:
-        raise RuntimeError("اتصال به Magic Hour برقرار نشد.") from e
+        raise RuntimeError("اتصال به Vadoo برقرار نشد.") from e
+
     if not r.ok:
         detail = r.text[:800].replace("\n", " ").strip()
         if r.status_code in (401, 403):
-            raise RuntimeError("کلید Magic Hour نامعتبر است یا دسترسی API ندارد.")
-        if r.status_code == 402:
-            raise RuntimeError("اعتبار Magic Hour کافی نیست؛ موجودی حساب را بررسی کن.")
-        raise RuntimeError(f"Magic Hour خطا داد ({r.status_code}): {detail}")
+            raise RuntimeError("کلید Vadoo نامعتبر است یا حساب شما دسترسی API ویدیو ندارد.")
+        raise RuntimeError(f"Vadoo خطا داد ({r.status_code}): {detail}")
+
     try:
         data = r.json()
     except ValueError as e:
-        raise RuntimeError("Magic Hour پاسخ JSON قابل خواندن برنگرداند.") from e
+        raise RuntimeError("Vadoo پاسخ JSON قابل خواندن برنگرداند.") from e
 
-    job_id = data.get("project_id") or data.get("projectId") or data.get("id")
-    if isinstance(data.get("project"), dict):
-        job_id = job_id or data["project"].get("id") or data["project"].get("project_id")
-    url = _find_video_url(data)
-    if not job_id and not url:
-        raise RuntimeError("Magic Hour درخواست را پذیرفت اما شناسهٔ پروژه برنگرداند.")
-    if url:
-        return {"job_id": str(job_id or uuid.uuid4().hex), "status": "completed", "url": url}
-    job_id = str(job_id)
-    MAGIC_HOUR_JOBS[job_id] = {"status": "processing", "url": None, "created_at": time.time()}
-    return {"job_id": job_id, "status": "processing", "url": None}
+    vid = _find_video_id(data)
+    if not vid:
+        raise RuntimeError("Vadoo درخواست را پذیرفت ولی شناسه ویدیو را برنگرداند.")
+
+    # If Vadoo ever returns a URL immediately, use it; otherwise wait for webhook.
+    immediate_url = _find_video_url(data)
+    VADOO_WEBHOOK_JOBS[vid] = {
+        "status": "completed" if immediate_url else "processing",
+        "url": immediate_url,
+        "created_at": time.time(),
+    }
+    return {"job_id": vid, "status": VADOO_WEBHOOK_JOBS[vid]["status"], "url": immediate_url}
 
 
 @app.post("/api/save-image")

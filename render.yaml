@@ -16,8 +16,5 @@ services:
         sync: false
       - key: POLLINATIONS_API_KEY
         sync: false
-      - key: MAGIC_HOUR_API_KEY
-        sync: false
-
-      - key: TRIPO_API_KEY
+      - key: V2FUN_API_KEY
         sync: false
