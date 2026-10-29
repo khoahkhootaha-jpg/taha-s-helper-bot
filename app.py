@@ -1484,21 +1484,31 @@ def _v2fun_wait(endpoint, payload, timeout_seconds=240):
         if status in ("COMPLETED", "SUCCESS", "SUCCEEDED"):
             return data
         if status in ("FAILED", "ERROR", "CANCELLED"):
-            # V2Fun may put the actual failure reason inside result/metadata rather
-            # than top-level error/message. Keep the diagnostic compact for UI/logs.
-            reason = (data.get("error") or data.get("message") or data.get("detail")
-                      or data.get("failure_reason") or data.get("error_message"))
-            if not reason:
-                result_detail = data.get("result")
-                if isinstance(result_detail, (dict, list, str)) and result_detail:
-                    reason = json.dumps(result_detail, ensure_ascii=False)[:900]
-            if not reason:
-                meta_detail = data.get("metadata")
-                if isinstance(meta_detail, (dict, list)) and meta_detail:
-                    reason = json.dumps(meta_detail, ensure_ascii=False)[:900]
-            if not reason:
-                reason = "V2Fun وضعیت FAILED برگرداند؛ علت در پاسخ API مشخص نبود."
-            raise RuntimeError("ساخت مدل در V2Fun ناموفق شد: " + str(reason)[:1000])
+            # V2Fun's documented task-failure response may put diagnostic details
+            # under `result` rather than top-level `error`/`message`.
+            def _failure_details(obj):
+                if isinstance(obj, dict):
+                    for key in ("error", "message", "detail", "reason", "failure_reason", "error_message"):
+                        val = obj.get(key)
+                        if isinstance(val, (str, int, float)) and str(val).strip():
+                            return str(val).strip()
+                    for key in ("result", "metadata", "details", "data"):
+                        val = obj.get(key)
+                        found = _failure_details(val)
+                        if found:
+                            return found
+                elif isinstance(obj, list):
+                    for item in obj:
+                        found = _failure_details(item)
+                        if found:
+                            return found
+                return ""
+            reason = _failure_details(data)
+            # Log task metadata (never headers or API key) so the cause is visible in Render logs.
+            safe_debug = {k: v for k, v in data.items() if k.lower() not in ("api_key", "authorization", "token")}
+            print("[V2FUN TASK FAILED DETAILS]", json.dumps(safe_debug, ensure_ascii=False)[:2500], flush=True)
+            message = "ساخت مدل در V2Fun ناموفق شد: " + (reason or status)
+            raise RuntimeError(message)
         time.sleep(3)
         data = _v2fun_get_task(endpoint, task_uuid)
     raise RuntimeError("ساخت مدل هنوز تمام نشده است. لطفاً کمی بعد دوباره تلاش کن؛ درخواست جدید ممکن است اعتبار دیگری مصرف کند.")
