@@ -1484,7 +1484,21 @@ def _v2fun_wait(endpoint, payload, timeout_seconds=240):
         if status in ("COMPLETED", "SUCCESS", "SUCCEEDED"):
             return data
         if status in ("FAILED", "ERROR", "CANCELLED"):
-            raise RuntimeError("ساخت مدل در V2Fun ناموفق شد: " + str(data.get("error") or data.get("message") or status))
+            # V2Fun may put the actual failure reason inside result/metadata rather
+            # than top-level error/message. Keep the diagnostic compact for UI/logs.
+            reason = (data.get("error") or data.get("message") or data.get("detail")
+                      or data.get("failure_reason") or data.get("error_message"))
+            if not reason:
+                result_detail = data.get("result")
+                if isinstance(result_detail, (dict, list, str)) and result_detail:
+                    reason = json.dumps(result_detail, ensure_ascii=False)[:900]
+            if not reason:
+                meta_detail = data.get("metadata")
+                if isinstance(meta_detail, (dict, list)) and meta_detail:
+                    reason = json.dumps(meta_detail, ensure_ascii=False)[:900]
+            if not reason:
+                reason = "V2Fun وضعیت FAILED برگرداند؛ علت در پاسخ API مشخص نبود."
+            raise RuntimeError("ساخت مدل در V2Fun ناموفق شد: " + str(reason)[:1000])
         time.sleep(3)
         data = _v2fun_get_task(endpoint, task_uuid)
     raise RuntimeError("ساخت مدل هنوز تمام نشده است. لطفاً کمی بعد دوباره تلاش کن؛ درخواست جدید ممکن است اعتبار دیگری مصرف کند.")
