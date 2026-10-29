@@ -313,11 +313,23 @@ async function transcribe(blob,filename){
 function open3DPanel(){document.getElementById('model3dPanel').classList.add('open');document.getElementById('model3dPrompt').focus()}
 function close3DPanel(){document.getElementById('model3dPanel').classList.remove('open')}
 async function generate3DModel(){
- const prompt=document.getElementById('model3dPrompt').value.trim();if(!prompt){alert('توضیح مدل سه‌بعدی را بنویس.');return}
- const btn=document.getElementById('model3dGo'),status=document.getElementById('model3dStatus');btn.disabled=true;status.textContent='در حال ساخت مدل سه‌بعدی… ممکن است چند دقیقه طول بکشد.';document.getElementById('status').textContent='در حال ساخت مدل سه‌بعدی…';
- try{const r=await fetch('/api/generate-3d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,with_texture:document.getElementById('model3dTexture').checked,format:document.getElementById('model3dFormat').value})});let d={};try{d=await r.json()}catch(e){}if(!r.ok)throw new Error(d.error||'ساخت مدل ناموفق بود');
-  status.innerHTML='مدل آماده شد: <a style="color:#19c37d" href="'+d.url+'">دانلود '+d.format.toUpperCase()+'</a>';addMessage('assistant','🧊 مدل سه‌بعدی آماده شد.\nفرمت: '+d.format.toUpperCase()+'\nدانلود: '+location.origin+d.url);close3DPanel();
- }catch(e){status.textContent='خطا: '+e.message}finally{btn.disabled=false;document.getElementById('status').textContent='آماده'}
+ const promptEl=document.getElementById('model3dPrompt');
+ const prompt=(promptEl?.value||'').trim();
+ if(!prompt){alert('توضیح مدل سه‌بعدی را بنویس.');promptEl?.focus();return}
+ const btn=document.getElementById('model3dGo'),status=document.getElementById('model3dStatus');
+ if(!btn||!status){alert('بخش ساخت مدل سه‌بعدی در صفحه پیدا نشد؛ صفحه را تازه‌سازی کن.');return}
+ btn.disabled=true;status.textContent='در حال اتصال به سرور و ساخت مدل سه‌بعدی… ممکن است چند دقیقه طول بکشد.';
+ const mainStatus=document.getElementById('status');if(mainStatus)mainStatus.textContent='در حال ساخت مدل سه‌بعدی…';
+ try{
+  const payload={prompt,with_texture:!!document.getElementById('model3dTexture')?.checked,format:document.getElementById('model3dFormat')?.value||'glb'};
+  const r=await fetch('/api/generate-3d',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},cache:'no-store',body:JSON.stringify(payload)});
+  const raw=await r.text();let d={};try{d=JSON.parse(raw)}catch(e){throw new Error('پاسخ سرور JSON نیست (HTTP '+r.status+'). '+raw.slice(0,180))}
+  if(!r.ok)throw new Error((d.error||d.message||'ساخت مدل ناموفق بود')+' (HTTP '+r.status+')');
+  if(!d.url)throw new Error('سرور موفقیت را اعلام کرد اما لینک دانلود نفرستاد.');
+  const a=document.createElement('a');a.href=d.url;a.textContent='دانلود '+String(d.format||payload.format).toUpperCase();a.style.color='#19c37d';a.target='_blank';a.rel='noopener';status.textContent='';status.append('مدل آماده شد: ',a);
+  addMessage('assistant','🧊 مدل سه‌بعدی آماده شد.\nفرمت: '+String(d.format||payload.format).toUpperCase()+'\nدانلود: '+location.origin+d.url);close3DPanel();
+ }catch(e){const msg=e?.message||String(e);status.textContent='خطا: '+msg;console.error('[V2FUN 3D UI]',e);if(mainStatus)mainStatus.textContent='ساخت مدل ناموفق بود؛ جزئیات در بخش ساخت مدل نمایش داده شده است.'}
+ finally{btn.disabled=false}
 }
 async function loadInfo(){try{let r=await fetch('/health',{cache:'no-store'});let d=await r.json();if(!r.ok)throw new Error('health');document.getElementById('modelLabel').textContent=d.model||'● آنلاین'}catch(e){document.getElementById('modelLabel').textContent='● آنلاین'}}
 loadInfo();loadHistory();

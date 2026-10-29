@@ -1460,7 +1460,10 @@ def _v2fun_get_task(endpoint, task_uuid):
 
 
 def _v2fun_wait(endpoint, payload, timeout_seconds=240):
+    # Keep request diagnostics in Render logs without ever printing the API key.
+    print(f"[V2FUN 3D] POST endpoint={endpoint} texture={payload.get('with_texture', 'n/a')}", flush=True)
     r = requests.post(f"{V2FUN_API_BASE}/{endpoint}", headers=_v2fun_headers(), json=payload, timeout=60)
+    print(f"[V2FUN 3D] create_http={r.status_code} body={r.text[:1200]}", flush=True)
     if r.status_code not in (200, 201, 202):
         detail = r.text[:700]
         if r.status_code in (401, 403):
@@ -1470,8 +1473,37 @@ def _v2fun_wait(endpoint, payload, timeout_seconds=240):
         raise RuntimeError(f"V2Fun خطا داد ({r.status_code}): {detail}")
     try: data = r.json()
     except ValueError: raise RuntimeError("V2Fun پاسخ JSON قابل خواندن برنگرداند.")
-    task_uuid = data.get("task_uuid") or data.get("task_id") or data.get("id")
-    if r.status_code == 200 and str(data.get("status", "")).upper() in ("COMPLETED", "SUCCESS", "SUCCEEDED"):
+    def find_task_id(obj):
+        if isinstance(obj, dict):
+            for key in ("task_uuid", "task_id", "uuid", "id"):
+                value = obj.get(key)
+                if isinstance(value, str) and value:
+                    return value
+            for key in ("data", "result", "task", "metadata"):
+                value = obj.get(key)
+                found = find_task_id(value)
+                if found:
+                    return found
+        elif isinstance(obj, list):
+            for value in obj:
+                found = find_task_id(value)
+                if found:
+                    return found
+        return None
+    def find_status(obj):
+        if isinstance(obj, dict):
+            for key in ("status", "state", "task_status"):
+                value = obj.get(key)
+                if isinstance(value, str) and value.upper() in ("PENDING", "QUEUED", "PROCESSING", "RUNNING", "COMPLETED", "SUCCESS", "SUCCEEDED", "FAILED", "ERROR", "CANCELLED"):
+                    return value.upper()
+            for key in ("data", "result", "task", "metadata"):
+                value = obj.get(key)
+                found = find_status(value)
+                if found:
+                    return found
+        return ""
+    task_uuid = find_task_id(data)
+    if find_status(data) in ("COMPLETED", "SUCCESS", "SUCCEEDED"):
         return data
     if not task_uuid:
         # Some synchronous responses return a direct result without task_uuid.
@@ -1480,35 +1512,39 @@ def _v2fun_wait(endpoint, payload, timeout_seconds=240):
         raise RuntimeError("V2Fun شناسه کار یا فایل خروجی را برنگرداند.")
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
-        status = str(data.get("status", "")).upper()
+        status = find_status(data)
+        print(f"[V2FUN 3D] poll_status={status or 'unknown'} task={task_uuid}", flush=True)
         if status in ("COMPLETED", "SUCCESS", "SUCCEEDED"):
             return data
         if status in ("FAILED", "ERROR", "CANCELLED"):
-            # V2Fun's documented task-failure response may put diagnostic details
-            # under `result` rather than top-level `error`/`message`.
-            def _failure_details(obj):
+            # V2Fun may put the actual failure reason inside result/metadata rather
+            # than top-level error/message. Keep the diagnostic compact for UI/logs.
+            def find_error(obj):
                 if isinstance(obj, dict):
-                    for key in ("error", "message", "detail", "reason", "failure_reason", "error_message"):
-                        val = obj.get(key)
-                        if isinstance(val, (str, int, float)) and str(val).strip():
-                            return str(val).strip()
-                    for key in ("result", "metadata", "details", "data"):
-                        val = obj.get(key)
-                        found = _failure_details(val)
-                        if found:
-                            return found
+                    for key in ("error", "message", "detail", "failure_reason", "error_message", "reason"):
+                        value = obj.get(key)
+                        if isinstance(value, str) and value.strip():
+                            return value.strip()
+                    for key in ("data", "result", "task", "metadata"):
+                        found = find_error(obj.get(key))
+                        if found: return found
                 elif isinstance(obj, list):
-                    for item in obj:
-                        found = _failure_details(item)
-                        if found:
-                            return found
-                return ""
-            reason = _failure_details(data)
-            # Log task metadata (never headers or API key) so the cause is visible in Render logs.
-            safe_debug = {k: v for k, v in data.items() if k.lower() not in ("api_key", "authorization", "token")}
-            print("[V2FUN TASK FAILED DETAILS]", json.dumps(safe_debug, ensure_ascii=False)[:2500], flush=True)
-            message = "ساخت مدل در V2Fun ناموفق شد: " + (reason or status)
-            raise RuntimeError(message)
+                    for value in obj:
+                        found = find_error(value)
+                        if found: return found
+                return None
+            reason = find_error(data)
+            if not reason:
+                result_detail = data.get("result")
+                if isinstance(result_detail, (dict, list, str)) and result_detail:
+                    reason = json.dumps(result_detail, ensure_ascii=False)[:900]
+            if not reason:
+                meta_detail = data.get("metadata")
+                if isinstance(meta_detail, (dict, list)) and meta_detail:
+                    reason = json.dumps(meta_detail, ensure_ascii=False)[:900]
+            if not reason:
+                reason = "V2Fun وضعیت FAILED برگرداند؛ علت در پاسخ API مشخص نبود."
+            raise RuntimeError("ساخت مدل در V2Fun ناموفق شد: " + str(reason)[:1000])
         time.sleep(3)
         data = _v2fun_get_task(endpoint, task_uuid)
     raise RuntimeError("ساخت مدل هنوز تمام نشده است. لطفاً کمی بعد دوباره تلاش کن؛ درخواست جدید ممکن است اعتبار دیگری مصرف کند.")
@@ -1527,6 +1563,13 @@ def _v2fun_download_url(value):
         elif isinstance(obj,str) and obj.startswith(("http://", "https://")) and any(ext in obj.lower() for ext in (".glb", ".obj", ".fbx", ".usdz")):
             urls.append(("url",obj))
     walk(value)
+    # Some API responses nest a JSON-encoded result inside a string.
+    if not urls and isinstance(value, dict):
+        for key in ("data", "result", "metadata", "output"):
+            nested = value.get(key)
+            if isinstance(nested, str):
+                try: walk(json.loads(nested))
+                except Exception: pass
     # Prefer explicit downloadable links, then a model URL.
     for preferred in ("download_url", "model_url", "asset_url", "url"):
         for k,u in urls:
