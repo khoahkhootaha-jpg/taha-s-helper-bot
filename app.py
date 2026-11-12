@@ -7,6 +7,7 @@ import mimetypes
 import re
 import base64
 import time
+import random
 import os
 import sys
 import zipfile
@@ -25,9 +26,9 @@ DATA_DIR.mkdir(exist_ok=True)
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
 GEMINI_REST_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = ""
-MODEL = "gemini-2.5-flash"
-VISION_MODEL = "gemini-2.5-flash"
-TRANSCRIBE_MODEL = "gemini-2.5-flash"
+MODEL = "gemini-3.8-flash"
+VISION_MODEL = "gemini-3.8-flash"
+TRANSCRIBE_MODEL = "gemini-3.8-flash"
 IMAGE_GEN_PROVIDER = "pollinations"
 POLLINATIONS_API_KEY = ""
 POLLINATIONS_IMAGE_MODEL = "gptimage"
@@ -60,7 +61,7 @@ def setup():
     print("=" * 56)
 
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-    MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+    MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
     VISION_MODEL = os.environ.get("GEMINI_VISION_MODEL", MODEL).strip() or MODEL
     TRANSCRIBE_MODEL = os.environ.get("GEMINI_TRANSCRIBE_MODEL", MODEL).strip() or MODEL
 
@@ -408,7 +409,10 @@ def _compact_for_tpm(messages, max_chars=6500):
 
 
 def gemini_chat(messages, use_vision=False):
-    """Send chat/vision messages through Google's OpenAI-compatible Gemini API."""
+    """Send chat/vision messages through Google's OpenAI-compatible Gemini API.
+
+    Retry temporary 503 overload responses with exponential backoff and jitter.
+    """
     if not GEMINI_API_KEY:
         raise RuntimeError("کلید GEMINI_API_KEY تنظیم نشده است.")
 
@@ -426,8 +430,11 @@ def gemini_chat(messages, use_vision=False):
         "max_tokens": 4096,
     }
 
+    max_attempts = 4  # یک درخواست اصلی + حداکثر سه تلاش مجدد
+    compacted = False
     last_error = None
-    for attempt in range(2):
+
+    for attempt in range(max_attempts):
         try:
             r = requests.post(
                 f"{GEMINI_API_BASE}/chat/completions",
@@ -435,21 +442,51 @@ def gemini_chat(messages, use_vision=False):
                 json=payload,
                 timeout=(20, 120 if use_vision else 90),
             )
-            if r.status_code in (413, 429):
-                if attempt == 0:
+
+            if r.status_code == 413:
+                if not compacted:
+                    compacted = True
                     payload["messages"] = _compact_for_tpm(messages, 2200)
                     payload["max_tokens"] = 2048
-                    time.sleep(1.5)
                     continue
-                if r.status_code == 429:
-                    raise RuntimeError("محدودیت یا سهمیه Gemini فعال شده است؛ کمی بعد دوباره امتحان کن.")
                 raise RuntimeError("درخواست برای Gemini بیش از حد بزرگ است.")
+
+            if r.status_code == 429:
+                raise RuntimeError("محدودیت یا سهمیه Gemini فعال شده است؛ کمی بعد دوباره امتحان کن.")
+
+            if r.status_code == 503:
+                try:
+                    detail = r.json()
+                except Exception:
+                    detail = r.text[:1000]
+
+                if attempt < max_attempts - 1:
+                    # Respect a numeric Retry-After header when provided, but cap
+                    # it so the browser's request timeout is not exceeded.
+                    retry_after = r.headers.get("Retry-After", "").strip()
+                    try:
+                        server_wait = float(retry_after) if retry_after else 0.0
+                    except (TypeError, ValueError):
+                        server_wait = 0.0
+                    backoff = min(8.0, 1.5 * (2 ** attempt))
+                    wait_seconds = min(8.0, max(backoff, server_wait)) + random.uniform(0.1, 0.5)
+                    print(f"[GEMINI 503] model={model}, retry={attempt + 1}/{max_attempts - 1}, wait={wait_seconds:.1f}s")
+                    time.sleep(wait_seconds)
+                    continue
+
+                print("[GEMINI 503 FINAL]", detail)
+                raise RuntimeError(
+                    "سرور Gemini موقتاً شلوغ است (503). چند بار تلاش کردیم اما هنوز پاسخ نمی‌دهد؛ "
+                    "لطفاً چند دقیقه دیگر دوباره پیام را بفرست."
+                )
+
             if not r.ok:
                 try:
                     detail = r.json()
                 except Exception:
                     detail = r.text[:1500]
                 raise RuntimeError(f"Gemini API error {r.status_code}: {detail}")
+
             data = r.json()
             answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
             if isinstance(answer, list):
@@ -458,12 +495,14 @@ def gemini_chat(messages, use_vision=False):
             if not answer:
                 raise RuntimeError("Gemini پاسخ متنی برنگرداند.")
             return answer
+
         except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError, requests.exceptions.Timeout) as e:
             last_error = e
             if attempt < 1:
                 time.sleep(1.2)
                 continue
             raise RuntimeError("اتصال به Gemini برقرار نشد یا پاسخ دیر رسید.") from e
+
     raise RuntimeError("پاسخی از Gemini دریافت نشد.") from last_error
 
 def image_data_url(path):

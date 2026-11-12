@@ -9,9 +9,9 @@
 - `GEMINI_API_KEY` = کلید Google Gemini API
 
 ## Optional Environment Variables
-- `GEMINI_MODEL` = `gemini-2.5-flash`
-- `GEMINI_VISION_MODEL` = `gemini-2.5-flash`
-- `GEMINI_TRANSCRIBE_MODEL` = `gemini-2.5-flash`
+- `GEMINI_MODEL` = `gemini-3.8-flash`
+- `GEMINI_VISION_MODEL` = `gemini-3.8-flash`
+- `GEMINI_TRANSCRIBE_MODEL` = `gemini-3.8-flash`
 - `POLLINATIONS_API_KEY` = ساخت تصویر و ویدیو
 - `V2FUN_API_KEY` = ساخت مدل سه‌بعدی
 - `VADOO_API_KEY` = سرویس ویدیوی Vadoo
