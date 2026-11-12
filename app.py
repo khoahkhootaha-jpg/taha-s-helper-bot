@@ -23,11 +23,13 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 DATA_DIR.mkdir(exist_ok=True)
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
-ORCAROUTER_API_BASE = os.environ.get("ORCAROUTER_BASE_URL", "https://api.orcarouter.ai/v1").strip().rstrip("/")
-ORCAROUTER_API_KEY = ""
+GROQ_API_BASE = "https://api.groq.com/openai/v1"
+DEEPSEEK_API_BASE = "https://api.deepseek.com"
 GROQ_TRANSCRIBE_API_KEY = ""
-MODEL = "z-ai/glm-5.3-flash-free"
-VISION_MODEL = "z-ai/glm-5.3-flash-free"
+GEMINI_API_KEY = ""
+API_KEY = ""
+MODEL = "openai/gpt-oss-120b"
+VISION_MODEL = "openai/gpt-oss-120b"
 TRANSCRIBE_MODEL = "whisper-large-v3-turbo"
 IMAGE_GEN_PROVIDER = "pollinations"
 POLLINATIONS_API_KEY = ""
@@ -50,34 +52,31 @@ app.config["JSON_AS_ASCII"] = False
 
 
 def setup():
-    global ORCAROUTER_API_KEY, GROQ_TRANSCRIBE_API_KEY, MODEL, VISION_MODEL, TRANSCRIBE_MODEL, POLLINATIONS_API_KEY, POLLINATIONS_IMAGE_MODEL, POLLINATIONS_VIDEO_MODEL, POLLINATIONS_VIDEO_MODELS, VADOO_API_KEY, V2FUN_API_KEY
+    global GEMINI_API_KEY, API_KEY, GROQ_TRANSCRIBE_API_KEY, MODEL, VISION_MODEL, TRANSCRIBE_MODEL, POLLINATIONS_API_KEY, POLLINATIONS_IMAGE_MODEL, POLLINATIONS_VIDEO_MODEL, POLLINATIONS_VIDEO_MODELS, VADOO_API_KEY, V2FUN_API_KEY
     print("\n" + "=" * 56)
-    print("                    Taha Helper Bot")
+    print("                    Taha's Helper Bot")
     print("=" * 56)
 
-    # Main chat and vision use OrcaRouter's OpenAI-compatible API.
-    ORCAROUTER_API_KEY = os.environ.get("ORCAROUTER_API_KEY", "").strip()
-    # Optional: keep Groq only for audio transcription. Chat does not use Groq.
-    GROQ_TRANSCRIBE_API_KEY = os.environ.get("GROQ_TRANSCRIBE_API_KEY", "").strip()
-
+    # Main chat + vision use Groq's OpenAI-compatible API.
+    API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    GROQ_TRANSCRIBE_API_KEY = os.environ.get("GROQ_TRANSCRIBE_API_KEY", os.environ.get("GROQ_API_KEY", "")).strip()
     POLLINATIONS_API_KEY = os.environ.get("POLLINATIONS_API_KEY", "").strip()
     POLLINATIONS_IMAGE_MODEL = os.environ.get("POLLINATIONS_IMAGE_MODEL", "").strip()
     POLLINATIONS_VIDEO_MODEL = os.environ.get("POLLINATIONS_VIDEO_MODEL", "").strip()
     VADOO_API_KEY = os.environ.get("VADOO_API_KEY", "").strip()
     V2FUN_API_KEY = os.environ.get("V2FUN_API_KEY", "").strip()
 
-    if not ORCAROUTER_API_KEY and sys.stdin.isatty():
-        print("🔑 OrcaRouter API Key را وارد کن.")
-        print("OrcaRouter API Key: ", end="", flush=True)
-        ORCAROUTER_API_KEY = input().strip()
+    if not API_KEY and sys.stdin.isatty():
+        print("🔑 DeepSeek API Key را همین‌جا در ترمینال وارد کن.")
+        print("DeepSeek API Key: ", end="", flush=True)
+        API_KEY = input().strip()
 
-    if not ORCAROUTER_API_KEY:
-        print("❌ ORCAROUTER_API_KEY تنظیم نشده است.")
+    if not API_KEY:
+        print("❌ DEEPSEEK_API_KEY تنظیم نشده است.")
         return False
 
-    MODEL = os.environ.get("ORCAROUTER_MODEL", "z-ai/glm-5.3-flash-free").strip() or "z-ai/glm-5.3-flash-free"
-    VISION_MODEL = os.environ.get("ORCAROUTER_VISION_MODEL", MODEL).strip() or MODEL
-    TRANSCRIBE_MODEL = os.environ.get("GROQ_TRANSCRIBE_MODEL", "whisper-large-v3-turbo").strip() or "whisper-large-v3-turbo"
+    MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat").strip() or "deepseek-chat"
+    VISION_MODEL = MODEL
 
     if not POLLINATIONS_API_KEY and sys.stdin.isatty():
         print("🖼 برای ساخت تصویر/ویدیو، کلید Pollinations را هم وارد کن.")
@@ -85,14 +84,10 @@ def setup():
         print("Pollinations Key: ", end="", flush=True)
         POLLINATIONS_API_KEY = input().strip()
 
-    print("✅ OrcaRouter API Key دریافت شد.")
-    print("🌐 API:", ORCAROUTER_API_BASE)
+    print("✅ DeepSeek API Key دریافت شد.")
     print("🤖 مدل متنی:", MODEL)
     print("👁 مدل Vision:", VISION_MODEL)
-    if GROQ_TRANSCRIBE_API_KEY:
-        print("🎙 تبدیل صدا به متن: Groq فعال است (اختیاری)")
-    else:
-        print("🎙 تبدیل صدا به متن: کلید جداگانه Groq تنظیم نشده")
+    print("🎙 مدل تبدیل صدا به متن:", TRANSCRIBE_MODEL)
 
     if POLLINATIONS_API_KEY:
         try:
@@ -100,11 +95,11 @@ def setup():
             if not POLLINATIONS_IMAGE_MODEL or POLLINATIONS_IMAGE_MODEL not in discovered:
                 preferred = ["gptimage", "gpt-image-2", "flux", "qwen-image", "zimage"]
                 POLLINATIONS_IMAGE_MODEL = next((m for m in preferred if m in discovered), discovered[0] if discovered else "gptimage")
+            print("🖼 مدل ساخت تصویر (Pollinations):", POLLINATIONS_IMAGE_MODEL)
 
             POLLINATIONS_VIDEO_MODELS = _pollinations_video_models()
             if not POLLINATIONS_VIDEO_MODEL:
                 POLLINATIONS_VIDEO_MODEL = POLLINATIONS_VIDEO_MODELS[0] if POLLINATIONS_VIDEO_MODELS else "auto"
-            print("🖼 مدل ساخت تصویر (Pollinations):", POLLINATIONS_IMAGE_MODEL)
             print("🎬 مدل ساخت ویدیو (Pollinations):", POLLINATIONS_VIDEO_MODEL)
             if POLLINATIONS_VIDEO_MODELS:
                 print("   ↳ مدل‌های ویدیو در دسترس:", ", ".join(POLLINATIONS_VIDEO_MODELS[:8]))
@@ -126,10 +121,8 @@ def setup():
     if VADOO_API_KEY:
         print("🎬 سرویس ویدیو: Vadoo AI (API) فعال است")
     else:
-        print("🎬 سرویس ویدیو: VADOO_API_KEY تنظیم نشده است")
-
+        print("🎬 سرویس ویدیو: Vadoo API Key تنظیم نشده است")
     return True
-
 
 def read_history():
     if not HISTORY_FILE.exists():
@@ -430,23 +423,19 @@ def _compact_for_tpm(messages, max_chars=6500):
     return out
 
 
-def orcarouter_chat(messages, use_vision=False):
+def groq_chat(messages, use_vision=False):
     model = VISION_MODEL if use_vision and VISION_MODEL else MODEL
     headers = {
-        "Authorization": f"Bearer {ORCAROUTER_API_KEY}",
+        "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json",
         "Connection": "close",
     }
     request_messages = _compact_for_tpm(messages, 5200)
     payload = {"model": model, "messages": request_messages, "temperature": 0.7, "max_tokens": 350}
+    last_error = None
     for attempt in range(2):
         try:
-            r = requests.post(
-                f"{ORCAROUTER_API_BASE}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=(15, 90 if not use_vision else 120),
-            )
+            r = requests.post(f"{DEEPSEEK_API_BASE}/chat/completions", headers=headers, json=payload, timeout=(15, 90 if not use_vision else 120))
             if r.status_code in (413, 429):
                 if attempt == 0:
                     payload["messages"] = _compact_for_tpm(messages, 2200)
@@ -454,23 +443,21 @@ def orcarouter_chat(messages, use_vision=False):
                     time.sleep(0.8 if r.status_code == 413 else 1.5)
                     continue
                 if r.status_code == 429:
-                    raise RuntimeError("محدودیت درخواست OrcaRouter فعال شده است؛ کمی صبر کن و دوباره امتحان کن.")
-                raise RuntimeError("درخواست برای مدل OrcaRouter بیش از حد بزرگ بود؛ دوباره امتحان کن.")
+                    raise RuntimeError("محدودیت موقت Groq فعال شده است؛ چند لحظه صبر کن و دوباره امتحان کن.")
+                raise RuntimeError("درخواست برای مدل Groq بیش از حد بزرگ بود؛ دوباره امتحان کن.")
             if not r.ok:
-                try:
-                    detail = r.json()
-                except Exception:
-                    detail = r.text
-                raise RuntimeError(f"OrcaRouter API error {r.status_code}: {detail}")
+                try: detail = r.json()
+                except Exception: detail = r.text
+                raise RuntimeError(f"DeepSeek API error {r.status_code}: {detail}")
             data = r.json()
             return data["choices"][0]["message"]["content"]
         except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError, requests.exceptions.Timeout) as e:
+            last_error = e
             if attempt < 1:
                 time.sleep(1.2)
                 continue
-            raise RuntimeError("اتصال به OrcaRouter قطع شد یا پاسخ دیر رسید. دوباره امتحان کن.") from e
-    raise RuntimeError("پاسخی از OrcaRouter دریافت نشد.")
-
+            raise RuntimeError("اتصال Groq قطع شد یا پاسخ دیر رسید. دوباره امتحان کن.") from e
+    raise RuntimeError("پاسخی از Groq دریافت نشد.") from last_error
 
 def image_data_url(path):
     if not path.exists():
@@ -1373,12 +1360,12 @@ def home():
 
 @app.get("/health")
 def health():
-    return jsonify(ok=True, provider="OrcaRouter", model=MODEL, vision_model=VISION_MODEL, transcription_model=TRANSCRIBE_MODEL, image_generation=IMAGE_GEN_PROVIDER)
+    return jsonify(ok=True, model=MODEL, vision_model=VISION_MODEL, transcription_model=TRANSCRIBE_MODEL, image_generation=IMAGE_GEN_PROVIDER)
 
 
 @app.get("/api/info")
 def info():
-    return jsonify(ok=True, provider="OrcaRouter", model=MODEL, vision_model=VISION_MODEL, transcription_model=TRANSCRIBE_MODEL, image_generation=IMAGE_GEN_PROVIDER)
+    return jsonify(ok=True, model=MODEL, vision_model=VISION_MODEL, transcription_model=TRANSCRIBE_MODEL, image_generation=IMAGE_GEN_PROVIDER)
 
 
 @app.get("/api/chats")
@@ -1455,7 +1442,7 @@ def chat():
         file_requested = is_file_request(last_user)
         if file_requested:
             prepared.insert(0, {"role": "system", "content": requested_file_instruction(last_user)})
-        reply = orcarouter_chat(prepared, use_vision=has_image)
+        reply = groq_chat(prepared, use_vision=has_image)
         code_bundle = save_code_bundle(last_user, reply)
         file_info = None
         if code_bundle:
@@ -1896,9 +1883,7 @@ def transcribe():
 
         filename = Path(f.filename).name or "voice.webm"
         mime = (f.mimetype or "audio/webm").split(";")[0]
-        if not GROQ_TRANSCRIBE_API_KEY:
-            return jsonify(error="برای تبدیل صدای ورودی به متن، کلید جداگانه GROQ_TRANSCRIBE_API_KEY لازم است. چت متنی از OrcaRouter استفاده می‌کند."), 503
-        # Audio transcription remains on Groq; OrcaRouter chat key is not reused here.
+        # Groq accepts webm, ogg, wav, mp3, m4a, etc. No FFmpeg is needed.
         files = {"file": (filename, audio_bytes, mime)}
         payload = {
             "model": TRANSCRIBE_MODEL or "whisper-large-v3-turbo",
@@ -1907,7 +1892,7 @@ def transcribe():
             "temperature": "0",
         }
         r = requests.post(
-            "https://api.groq.com/openai/v1/audio/transcriptions",
+            f"{GROQ_API_BASE}/audio/transcriptions",
             headers={"Authorization": f"Bearer {GROQ_TRANSCRIBE_API_KEY}"},
             files=files,
             data=payload,
