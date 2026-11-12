@@ -6,15 +6,17 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app
     envVars:
-      - key: GROQ_API_KEY
+      - key: GEMINI_API_KEY
         sync: false
-      - key: GROQ_MODEL
-        value: gemini-3.8-flash
-      - key: GROQ_VISION_MODEL
-        value: gemini-3.8-flash
-      - key: GROQ_API_KEY
-        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: GEMINI_VISION_MODEL
+        value: gemini-2.5-flash
+      - key: GEMINI_TRANSCRIBE_MODEL
+        value: gemini-2.5-flash
       - key: POLLINATIONS_API_KEY
         sync: false
       - key: V2FUN_API_KEY
+        sync: false
+      - key: VADOO_API_KEY
         sync: false

@@ -1,14 +1,10 @@
-اتصال معراج بات به DeepSeek
-================================
-در Render > Environment این متغیرها را تنظیم کن:
+نسخه Gemini ربات Taha's Helper Bot
 
-DEEPSEEK_API_KEY = کلید ساخته‌شده در DeepSeek Platform
-DEEPSEEK_MODEL = deepseek-chat  (اختیاری؛ مقدار پیش‌فرض همین است)
+برای اجرا:
+1) متغیر GEMINI_API_KEY را تنظیم کن.
+2) وابستگی‌ها را نصب کن: pip install -r requirements.txt
+3) اجرا: gunicorn app:app
 
-Base URL: https://api.deepseek.com
-
-تبدیل صدای ورودی به متن همچنان از Groq Whisper استفاده می‌کند. اگر می‌خواهی میکروفون هم کار کند، یکی از این دو متغیر را تنظیم کن:
-GROQ_TRANSCRIBE_API_KEY = کلید Groq فقط برای Whisper
-یا GROQ_API_KEY = کلید Groq (سازگاری با تنظیم قبلی)
-
-نکته: DeepSeek API رایگان نیست و بر اساس تعرفه حساب می‌شود. مدل deepseek-chat ورودی تصویری را پشتیبانی نمی‌کند؛ قابلیت تحلیل تصویر در این نسخه با DeepSeek قابل استفاده نیست. ظاهر سایت و قابلیت‌های مستقل V2Fun/Pollinations/Vadoo تغییر نکرده‌اند.
+مدل پیش‌فرض چت، تحلیل تصویر و تبدیل صدا gemini-2.5-flash است.
+برای تغییر مدل از متغیرهای GEMINI_MODEL، GEMINI_VISION_MODEL و GEMINI_TRANSCRIBE_MODEL استفاده کن.
+ساخت تصویر/ویدیو با Pollinations و ساخت سه‌بعدی با V2Fun جداگانه باقی مانده‌اند.

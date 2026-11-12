@@ -1,18 +1,19 @@
-# Taha's Helper Bot — آماده استقرار روی Render
+# Taha's Helper Bot — Gemini Edition (Render)
 
-## تنظیمات Render
+## Render settings
 - Runtime: Python 3
 - Build Command: `pip install -r requirements.txt`
 - Start Command: `gunicorn app:app`
-- Plan: Free
 
-## Environment Variables
-در Render این دو متغیر را اضافه کن:
+## Required Environment Variables
+- `GEMINI_API_KEY` = کلید Google Gemini API
 
-- `GROQ_API_KEY` = کلید Groq خودت
-- `POLLINATIONS_API_KEY` = کلید Pollinations (اختیاری؛ فقط برای ساخت تصویر)
+## Optional Environment Variables
+- `GEMINI_MODEL` = `gemini-2.5-flash`
+- `GEMINI_VISION_MODEL` = `gemini-2.5-flash`
+- `GEMINI_TRANSCRIBE_MODEL` = `gemini-2.5-flash`
+- `POLLINATIONS_API_KEY` = ساخت تصویر و ویدیو
+- `V2FUN_API_KEY` = ساخت مدل سه‌بعدی
+- `VADOO_API_KEY` = سرویس ویدیوی Vadoo
 
-کلیدها را داخل GitHub یا فایل کد قرار نده.
-
-## نکته مهم درباره Free
-Render برای سرویس رایگان بعد از 15 دقیقه بدون درخواست، سرویس را متوقف می‌کند و درخواست بعدی آن را دوباره بالا می‌آورد. همچنین فایل‌های محلی مثل تاریخچه و فایل‌های آپلودشده روی Free پایدار نیستند و با restart/redeploy/spin-down ممکن است از بین بروند.
+کلیدها را داخل کد یا GitHub قرار نده.
