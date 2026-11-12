@@ -23,11 +23,11 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 DATA_DIR.mkdir(exist_ok=True)
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
-GROQ_API_BASE = "https://api.groq.com/openai/v1"
-GEMINI_API_KEY = ""
-API_KEY = ""
-MODEL = "openai/gpt-oss-120b"
-VISION_MODEL = "openai/gpt-oss-120b"
+ORCAROUTER_API_BASE = os.environ.get("ORCAROUTER_BASE_URL", "https://api.orcarouter.ai/v1").strip().rstrip("/")
+ORCAROUTER_API_KEY = ""
+GROQ_TRANSCRIBE_API_KEY = ""
+MODEL = "z-ai/glm-5.3-flash-free"
+VISION_MODEL = "z-ai/glm-5.3-flash-free"
 TRANSCRIBE_MODEL = "whisper-large-v3-turbo"
 IMAGE_GEN_PROVIDER = "pollinations"
 POLLINATIONS_API_KEY = ""
@@ -50,30 +50,34 @@ app.config["JSON_AS_ASCII"] = False
 
 
 def setup():
-    global GEMINI_API_KEY, API_KEY, MODEL, VISION_MODEL, TRANSCRIBE_MODEL, POLLINATIONS_API_KEY, POLLINATIONS_IMAGE_MODEL, POLLINATIONS_VIDEO_MODEL, POLLINATIONS_VIDEO_MODELS, VADOO_API_KEY, V2FUN_API_KEY
+    global ORCAROUTER_API_KEY, GROQ_TRANSCRIBE_API_KEY, MODEL, VISION_MODEL, TRANSCRIBE_MODEL, POLLINATIONS_API_KEY, POLLINATIONS_IMAGE_MODEL, POLLINATIONS_VIDEO_MODEL, POLLINATIONS_VIDEO_MODELS, VADOO_API_KEY, V2FUN_API_KEY
     print("\n" + "=" * 56)
-    print("                    Taha's Helper Bot")
+    print("                    Taha Helper Bot")
     print("=" * 56)
 
-    # Main chat + vision use Groq's OpenAI-compatible API.
-    API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+    # Main chat and vision use OrcaRouter's OpenAI-compatible API.
+    ORCAROUTER_API_KEY = os.environ.get("ORCAROUTER_API_KEY", "").strip()
+    # Optional: keep Groq only for audio transcription. Chat does not use Groq.
+    GROQ_TRANSCRIBE_API_KEY = os.environ.get("GROQ_TRANSCRIBE_API_KEY", "").strip()
+
     POLLINATIONS_API_KEY = os.environ.get("POLLINATIONS_API_KEY", "").strip()
     POLLINATIONS_IMAGE_MODEL = os.environ.get("POLLINATIONS_IMAGE_MODEL", "").strip()
     POLLINATIONS_VIDEO_MODEL = os.environ.get("POLLINATIONS_VIDEO_MODEL", "").strip()
     VADOO_API_KEY = os.environ.get("VADOO_API_KEY", "").strip()
     V2FUN_API_KEY = os.environ.get("V2FUN_API_KEY", "").strip()
 
-    if not API_KEY and sys.stdin.isatty():
-        print("🔑 Groq API Key را همین‌جا در ترمینال وارد کن.")
-        print("Groq API Key: ", end="", flush=True)
-        API_KEY = input().strip()
+    if not ORCAROUTER_API_KEY and sys.stdin.isatty():
+        print("🔑 OrcaRouter API Key را وارد کن.")
+        print("OrcaRouter API Key: ", end="", flush=True)
+        ORCAROUTER_API_KEY = input().strip()
 
-    if not API_KEY:
-        print("❌ GROQ_API_KEY تنظیم نشده است.")
+    if not ORCAROUTER_API_KEY:
+        print("❌ ORCAROUTER_API_KEY تنظیم نشده است.")
         return False
 
-    MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b").strip() or "openai/gpt-oss-120b"
-    VISION_MODEL = os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.8-27b").strip() or "qwen/qwen3.8-27b"
+    MODEL = os.environ.get("ORCAROUTER_MODEL", "z-ai/glm-5.3-flash-free").strip() or "z-ai/glm-5.3-flash-free"
+    VISION_MODEL = os.environ.get("ORCAROUTER_VISION_MODEL", MODEL).strip() or MODEL
+    TRANSCRIBE_MODEL = os.environ.get("GROQ_TRANSCRIBE_MODEL", "whisper-large-v3-turbo").strip() or "whisper-large-v3-turbo"
 
     if not POLLINATIONS_API_KEY and sys.stdin.isatty():
         print("🖼 برای ساخت تصویر/ویدیو، کلید Pollinations را هم وارد کن.")
@@ -81,10 +85,14 @@ def setup():
         print("Pollinations Key: ", end="", flush=True)
         POLLINATIONS_API_KEY = input().strip()
 
-    print("✅ Groq API Key دریافت شد.")
+    print("✅ OrcaRouter API Key دریافت شد.")
+    print("🌐 API:", ORCAROUTER_API_BASE)
     print("🤖 مدل متنی:", MODEL)
     print("👁 مدل Vision:", VISION_MODEL)
-    print("🎙 مدل تبدیل صدا به متن:", TRANSCRIBE_MODEL)
+    if GROQ_TRANSCRIBE_API_KEY:
+        print("🎙 تبدیل صدا به متن: Groq فعال است (اختیاری)")
+    else:
+        print("🎙 تبدیل صدا به متن: کلید جداگانه Groq تنظیم نشده")
 
     if POLLINATIONS_API_KEY:
         try:
@@ -92,11 +100,11 @@ def setup():
             if not POLLINATIONS_IMAGE_MODEL or POLLINATIONS_IMAGE_MODEL not in discovered:
                 preferred = ["gptimage", "gpt-image-2", "flux", "qwen-image", "zimage"]
                 POLLINATIONS_IMAGE_MODEL = next((m for m in preferred if m in discovered), discovered[0] if discovered else "gptimage")
-            print("🖼 مدل ساخت تصویر (Pollinations):", POLLINATIONS_IMAGE_MODEL)
 
             POLLINATIONS_VIDEO_MODELS = _pollinations_video_models()
             if not POLLINATIONS_VIDEO_MODEL:
                 POLLINATIONS_VIDEO_MODEL = POLLINATIONS_VIDEO_MODELS[0] if POLLINATIONS_VIDEO_MODELS else "auto"
+            print("🖼 مدل ساخت تصویر (Pollinations):", POLLINATIONS_IMAGE_MODEL)
             print("🎬 مدل ساخت ویدیو (Pollinations):", POLLINATIONS_VIDEO_MODEL)
             if POLLINATIONS_VIDEO_MODELS:
                 print("   ↳ مدل‌های ویدیو در دسترس:", ", ".join(POLLINATIONS_VIDEO_MODELS[:8]))
@@ -118,8 +126,10 @@ def setup():
     if VADOO_API_KEY:
         print("🎬 سرویس ویدیو: Vadoo AI (API) فعال است")
     else:
-        print("🎬 سرویس ویدیو: Vadoo API Key تنظیم نشده است")
+        print("🎬 سرویس ویدیو: VADOO_API_KEY تنظیم نشده است")
+
     return True
+
 
 def read_history():
     if not HISTORY_FILE.exists():
@@ -420,19 +430,23 @@ def _compact_for_tpm(messages, max_chars=6500):
     return out
 
 
-def groq_chat(messages, use_vision=False):
+def orcarouter_chat(messages, use_vision=False):
     model = VISION_MODEL if use_vision and VISION_MODEL else MODEL
     headers = {
-        "Authorization": f"Bearer {API_KEY}",
+        "Authorization": f"Bearer {ORCAROUTER_API_KEY}",
         "Content-Type": "application/json",
         "Connection": "close",
     }
     request_messages = _compact_for_tpm(messages, 5200)
     payload = {"model": model, "messages": request_messages, "temperature": 0.7, "max_tokens": 350}
-    last_error = None
     for attempt in range(2):
         try:
-            r = requests.post(f"{GROQ_API_BASE}/chat/completions", headers=headers, json=payload, timeout=(15, 90 if not use_vision else 120))
+            r = requests.post(
+                f"{ORCAROUTER_API_BASE}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=(15, 90 if not use_vision else 120),
+            )
             if r.status_code in (413, 429):
                 if attempt == 0:
                     payload["messages"] = _compact_for_tpm(messages, 2200)
@@ -440,21 +454,23 @@ def groq_chat(messages, use_vision=False):
                     time.sleep(0.8 if r.status_code == 413 else 1.5)
                     continue
                 if r.status_code == 429:
-                    raise RuntimeError("محدودیت موقت Groq فعال شده است؛ چند لحظه صبر کن و دوباره امتحان کن.")
-                raise RuntimeError("درخواست برای مدل Groq بیش از حد بزرگ بود؛ دوباره امتحان کن.")
+                    raise RuntimeError("محدودیت درخواست OrcaRouter فعال شده است؛ کمی صبر کن و دوباره امتحان کن.")
+                raise RuntimeError("درخواست برای مدل OrcaRouter بیش از حد بزرگ بود؛ دوباره امتحان کن.")
             if not r.ok:
-                try: detail = r.json()
-                except Exception: detail = r.text
-                raise RuntimeError(f"Groq API error {r.status_code}: {detail}")
+                try:
+                    detail = r.json()
+                except Exception:
+                    detail = r.text
+                raise RuntimeError(f"OrcaRouter API error {r.status_code}: {detail}")
             data = r.json()
             return data["choices"][0]["message"]["content"]
         except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError, requests.exceptions.Timeout) as e:
-            last_error = e
             if attempt < 1:
                 time.sleep(1.2)
                 continue
-            raise RuntimeError("اتصال Groq قطع شد یا پاسخ دیر رسید. دوباره امتحان کن.") from e
-    raise RuntimeError("پاسخی از Groq دریافت نشد.") from last_error
+            raise RuntimeError("اتصال به OrcaRouter قطع شد یا پاسخ دیر رسید. دوباره امتحان کن.") from e
+    raise RuntimeError("پاسخی از OrcaRouter دریافت نشد.")
+
 
 def image_data_url(path):
     if not path.exists():
@@ -955,39 +971,112 @@ HTML_PAGE = r'''<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Taha's Helper Bot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<meta name="theme-color" content="#07070b">
 <style>
-*{box-sizing:border-box}
-:root{--bg:#0b0b0f;--line:#2a2a33;--text:#f4f4f5;--muted:#a1a1aa;--bubble:#202024;--accent:#fff}
-html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Tahoma,Arial,sans-serif}
-body{overflow:hidden}button{font:inherit;color:inherit}
-.app{height:100dvh;display:flex;background:var(--bg)}
-.sidebar{width:290px;background:#101014;border-left:1px solid var(--line);display:flex;flex-direction:column;padding:12px;gap:10px;position:fixed;right:0;top:0;bottom:0;z-index:20;transform:translateX(100%);transition:.22s ease}
+*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#34344a transparent}
+*::-webkit-scrollbar{width:8px;height:8px}*::-webkit-scrollbar-thumb{background:#2e2e42;border-radius:8px}*::-webkit-scrollbar-thumb:hover{background:#44445f}*::-webkit-scrollbar-track{background:transparent}
+:root{--bg:#07070b;--surface:#121219;--surface2:#1a1a24;--surface3:#232331;--line:#252534;--line2:#34344a;--text:#f3f3f8;--muted:#9b9bb0;--bubble:#14141c;--accent:#8b7cff;--accent2:#58d5c9;--ok:#3ddc97;--grad:linear-gradient(135deg,#8b7cff 0%,#5fb6ff 55%,#58d5c9 100%);--ring:0 0 0 3px rgba(139,124,255,.22);--radius:16px}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:"Vazirmatn","Vazir",system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Tahoma,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+body{overflow:hidden;background:radial-gradient(900px 520px at 88% -12%,rgba(116,92,255,.20),transparent 62%),radial-gradient(760px 480px at -5% 112%,rgba(46,196,182,.13),transparent 62%),var(--bg)}
+button{font:inherit;color:inherit;transition:background .18s ease,border-color .18s ease,transform .18s ease,box-shadow .18s ease,opacity .18s ease}
+::selection{background:rgba(139,124,255,.38)}::placeholder{color:#6a6a82}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.app{height:100dvh;display:flex;background:transparent}
+.sidebar{width:290px;background:rgba(14,14,20,.92);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-left:1px solid var(--line);display:flex;flex-direction:column;padding:14px;gap:12px;position:fixed;right:0;top:0;bottom:0;z-index:20;transform:translateX(100%);transition:transform .26s cubic-bezier(.3,.8,.3,1);box-shadow:-20px 0 60px rgba(0,0,0,.45)}
 .sidebar.open{transform:translateX(0)}.side-top{display:flex;align-items:center;gap:8px}
-.newchat{flex:1;border:1px solid #303039;background:#1b1b21;border-radius:12px;padding:12px;cursor:pointer;text-align:right}
-.close-side,.iconbtn{width:44px;height:44px;border:0;border-radius:12px;background:transparent;cursor:pointer;font-size:23px;display:grid;place-items:center}
-.close-side:hover,.iconbtn:hover,.newchat:hover{background:#23232a}
-.history{overflow:auto;flex:1;padding-top:6px}.history-title{font-size:12px;color:var(--muted);padding:10px 8px}
-.history-item{border:0;background:transparent;width:100%;padding:11px 10px;border-radius:10px;text-align:right;cursor:pointer;color:#ddd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px}
-.history-item:hover,.history-item.active{background:#24242b}.history-empty{font-size:13px;color:#666;padding:12px 8px}
+.newchat{flex:1;border:1px solid var(--line2);background:linear-gradient(180deg,var(--surface3),var(--surface2));border-radius:14px;padding:12px 14px;cursor:pointer;text-align:right;font-weight:600;font-size:14px}
+.newchat:hover{border-color:var(--accent);box-shadow:var(--ring)}
+.close-side,.iconbtn{width:44px;height:44px;border:0;border-radius:13px;background:transparent;cursor:pointer;font-size:22px;display:grid;place-items:center;color:#d6d6e4}
+.close-side:hover,.iconbtn:hover{background:var(--surface3)}.iconbtn:active{transform:scale(.94)}
+.history{overflow:auto;flex:1;padding-top:6px}.history-title{font-size:11px;letter-spacing:.04em;color:var(--muted);padding:10px 10px 8px;font-weight:600}
+.history-item{border:0;background:transparent;width:100%;padding:11px 12px;border-radius:12px;text-align:right;cursor:pointer;color:#cfcfdd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px;font-size:14px}
+.history-item:hover{background:var(--surface2);color:#fff}.history-item.active{background:rgba(139,124,255,.14);color:#fff;box-shadow:inset -3px 0 0 var(--accent)}.history-empty{font-size:13px;color:#6a6a82;padding:12px 10px}
 .main{height:100%;width:100%;display:flex;flex-direction:column}
-.topbar{height:64px;display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid #202027;background:rgba(11,11,15,.94);backdrop-filter:blur(14px);position:relative;z-index:5}
-.top-right,.top-left{display:flex;align-items:center;gap:6px}.brand{font-weight:700;font-size:17px}.model{font-size:11px;color:var(--muted);margin-right:6px;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.menu{position:absolute;left:12px;top:54px;width:220px;background:#1a1a20;border:1px solid #30303a;border-radius:14px;padding:6px;display:none;box-shadow:0 18px 45px #0008;z-index:30}
-.menu.open{display:block}.menu button{width:100%;border:0;background:transparent;padding:12px;text-align:right;border-radius:9px;cursor:pointer}.menu button:hover{background:#292930}
-.messages{flex:1;overflow:auto;padding:22px 14px 150px}.empty{height:100%;display:grid;place-items:center;text-align:center;color:#eee}.empty h1{font-size:30px;margin:0 0 10px}.empty p{color:var(--muted);margin:0}
-.msg{max-width:820px;margin:0 auto 18px;display:flex;gap:12px;align-items:flex-start}.avatar{width:32px;height:32px;border-radius:9px;background:#23232a;display:grid;place-items:center;flex:none}.msg.user .avatar{background:#2d2d35}
-.bubble{white-space:pre-wrap;line-height:1.8;font-size:15px;flex:1;padding-top:3px}.msg.assistant .bubble{background:var(--bubble);padding:12px 14px;border-radius:15px}
-.composer-wrap{position:fixed;left:0;right:0;bottom:0;padding:12px 14px 16px;background:linear-gradient(transparent,var(--bg) 22%);z-index:10}
-.composer{max-width:820px;margin:auto;background:#1d1d22;border:1px solid #35353e;border-radius:18px;display:flex;align-items:flex-end;gap:8px;padding:8px}
-textarea{flex:1;resize:none;border:0;outline:0;background:transparent;color:white;min-height:44px;max-height:160px;padding:11px;font-size:16px;line-height:1.5}
-.send,.attach,.mic,.imagegen{width:44px;height:44px;border:0;border-radius:13px;cursor:pointer;display:grid;place-items:center}.send{background:#fff;color:#111;font-size:20px}.attach,.mic,.imagegen{background:#292930}.imagegen.active{background:#3b2f70}.mic.recording{background:#7f1d1d;animation:pulse 1s infinite}.send:disabled,.mic:disabled{opacity:.35}.generated-video{width:min(100%,720px);border-radius:14px;display:block;margin-top:10px;background:#000}.video-panel{}.file-input{display:none}
-.status{max-width:820px;margin:6px auto 0;color:#888;font-size:11px;padding:0 8px}.file-pill{max-width:820px;margin:0 auto 7px;color:#bbb;font-size:12px;padding:0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.msg-actions{display:flex;gap:6px;margin-top:8px}.msg-action{border:1px solid #34343d;background:#18181d;color:#bcbcc5;border-radius:9px;padding:5px 9px;font-size:11px;cursor:pointer}.msg-action:hover{background:#292930;color:#fff}.sources{margin-top:9px;padding-top:8px;border-top:1px solid #34343d;font-size:12px}.sources-title{color:#aaa;margin-bottom:5px}.source-link{display:block;color:#b9b9c5;text-decoration:none;padding:3px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.source-link:hover{color:#fff;text-decoration:underline}.web-badge{display:inline-block;font-size:10px;color:#aaa;background:#17171c;border:1px solid #303039;border-radius:7px;padding:2px 6px;margin-bottom:7px}
-.image-panel{max-width:820px;margin:0 auto 7px;display:none;padding:8px;background:#17171c;border:1px solid #30303a;border-radius:14px;gap:7px;align-items:center}.image-panel.open{display:flex}.image-panel input{flex:1;min-width:0;background:#0f0f13;border:1px solid #30303a;color:#fff;border-radius:10px;padding:10px;outline:none}.image-panel button{border:1px solid #34343d;background:#25252c;color:#fff;border-radius:10px;padding:9px 12px;cursor:pointer}.generated-image{max-width:100%;border-radius:14px;margin-top:10px;display:block}.image-tools{display:flex;gap:7px;margin-top:8px;align-items:center}.image-download{text-decoration:none!important;display:inline-flex!important;align-items:center;justify-content:center}.image-caption{font-size:12px;color:#aaa;margin-top:6px}.file-tools{display:flex;gap:7px;margin-top:9px;align-items:center;flex-wrap:wrap}.file-download{text-decoration:none!important}.code-block{margin:12px 0 4px;background:#0d0d10;border:1px solid #30303a;border-radius:12px;overflow:hidden;direction:ltr;text-align:left}.code-head{display:flex;align-items:center;justify-content:space-between;padding:7px 9px;background:#17171c;border-bottom:1px solid #30303a;color:#aaa;font-size:11px}.code-copy{border:1px solid #34343d;background:#25252c;color:#ddd;border-radius:7px;padding:4px 8px;font-size:11px;cursor:pointer}.code-block code{display:block;white-space:pre;overflow:auto;padding:12px;font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#eee}.code-download{border:1px solid #34343d;background:#25252c;color:#ddd;border-radius:7px;padding:4px 8px;font-size:11px;text-decoration:none}.preview-btn{border:1px solid #386b56;background:#153528;color:#d8ffea;border-radius:8px;padding:7px 11px;cursor:pointer}.code-bundle-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.preview-wrap{margin-top:10px;border:1px solid #34343d;border-radius:12px;overflow:hidden;background:#fff}.preview-wrap iframe{width:100%;height:440px;border:0;background:white}.build-card{max-width:820px;margin:0 auto 16px;padding:14px;border:1px solid #34433d;border-radius:16px;background:linear-gradient(135deg,#101c18,#111318);direction:rtl}.road{height:74px;border-radius:12px;overflow:hidden;position:relative;background:linear-gradient(#15251f 0 35%,#30343a 35% 65%,#15251f 65%);}.road:before{content:"";position:absolute;left:0;right:0;top:50%;height:4px;background:repeating-linear-gradient(90deg,#f4e6a6 0 28px,transparent 28px 55px);transform:translateY(-50%);animation:roadmove .55s linear infinite}.road:after{content:"";position:absolute;left:50%;top:0;bottom:0;width:2px;background:#ffffff18;box-shadow:-80px 0 #ffffff12,80px 0 #ffffff12}.build-title{font-size:13px;color:#e5fff1;margin:0 0 9px}.build-stage{font-size:12px;color:#c6d4ce;margin-top:9px}.build-dots{display:flex;gap:5px;margin-top:8px}.build-dots i{width:6px;height:6px;border-radius:50%;background:#55d69a;animation:dotpulse 1s infinite}.build-dots i:nth-child(2){animation-delay:.2s}.build-dots i:nth-child(3){animation-delay:.4s}@keyframes roadmove{to{background-position:55px 0}}@keyframes dotpulse{50%{opacity:.2;transform:scale(.7)}}.cancel-btn{display:none;border:1px solid #4a2d2d;background:#241719;color:#ddd;border-radius:9px;padding:4px 8px;font-size:11px;cursor:pointer}.cancel-btn.show{display:inline-block}
+.topbar{height:66px;display:flex;align-items:center;justify-content:space-between;padding:8px 14px;border-bottom:1px solid var(--line);background:rgba(8,8,12,.72);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);position:relative;z-index:5}
+.top-right,.top-left{display:flex;align-items:center;gap:6px}
+.brand{font-weight:800;font-size:17px;letter-spacing:.01em;background:linear-gradient(110deg,#fff 30%,#c9c2ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+.model{font-size:11px;color:var(--ok);margin-right:0;margin-top:1px;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.menu{position:absolute;left:12px;top:58px;width:236px;background:rgba(24,24,33,.96);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid var(--line2);border-radius:16px;padding:6px;display:none;box-shadow:0 24px 60px rgba(0,0,0,.55);z-index:30;transform-origin:top left}
+.menu.open{display:block;animation:pop .16s ease-out}.menu button{width:100%;border:0;background:transparent;padding:12px 13px;text-align:right;border-radius:11px;cursor:pointer;font-size:14px}.menu button:hover{background:var(--surface3)}
+.messages{flex:1;overflow:auto;padding:26px 14px 160px;scroll-behavior:smooth}
+.empty{height:100%;display:grid;place-items:center;text-align:center;color:#eee}
+.empty>div::before{content:"✦";display:grid;place-items:center;width:76px;height:76px;margin:0 auto 24px;border-radius:26px;font-size:30px;color:#0b0b14;background:radial-gradient(circle at 28% 22%,rgba(255,255,255,.55),transparent 42%),var(--grad);box-shadow:0 14px 44px rgba(139,124,255,.45),inset 0 0 0 1px rgba(255,255,255,.22)}
+.empty h1{font-size:32px;font-weight:800;margin:0 0 10px;letter-spacing:.01em;background:linear-gradient(120deg,#fff 20%,#cbc5ff 60%,#8fe6dd);-webkit-background-clip:text;background-clip:text;color:transparent}.empty p{color:var(--muted);margin:0;font-size:15px}
+.msg{max-width:820px;margin:0 auto 20px;display:flex;gap:12px;align-items:flex-start}
+.messages>.msg:last-child{animation:rise .38s ease both}
+.avatar{width:34px;height:34px;border-radius:11px;background:var(--surface3);display:grid;place-items:center;flex:none;font-size:12px;font-weight:700;color:#cfcfe0;border:1px solid var(--line2)}
+.msg.user .avatar{background:var(--surface2)}
+.msg.assistant .avatar{background:var(--grad);color:#0b0b14;border:0;font-size:14px;font-weight:800;box-shadow:0 6px 18px rgba(139,124,255,.32)}
+.bubble{white-space:pre-wrap;line-height:1.9;font-size:15px;flex:1;padding-top:4px;min-width:0;overflow-wrap:anywhere}
+.msg.assistant .bubble{background:var(--bubble);border:1px solid var(--line);padding:14px 16px;border-radius:6px 18px 18px 18px;box-shadow:0 8px 30px rgba(0,0,0,.25)}
+.msg.user .bubble{flex:0 1 auto;max-width:calc(100% - 46px);background:linear-gradient(135deg,rgba(139,124,255,.20),rgba(88,213,201,.10));border:1px solid rgba(139,124,255,.30);padding:12px 16px;border-radius:18px 6px 18px 18px}
+.composer-wrap{position:fixed;left:0;right:0;bottom:0;padding:14px 14px calc(16px + env(safe-area-inset-bottom,0px));background:linear-gradient(transparent,rgba(7,7,11,.92) 30%);z-index:10;pointer-events:none}
+.composer-wrap>*{pointer-events:auto}
+.composer{max-width:820px;margin:auto;background:rgba(22,22,31,.92);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid var(--line2);border-radius:24px;display:flex;align-items:flex-end;gap:8px;padding:8px;box-shadow:0 18px 50px rgba(0,0,0,.5);transition:border-color .2s ease,box-shadow .2s ease}
+.composer:focus-within{border-color:rgba(139,124,255,.7);box-shadow:0 18px 50px rgba(0,0,0,.5),var(--ring)}
+textarea{flex:1;resize:none;border:0;outline:0;background:transparent;color:var(--text);font-family:inherit;min-height:44px;max-height:160px;padding:11px 8px;font-size:16px;line-height:1.55}
+.send,.attach,.mic,.imagegen{width:44px;height:44px;border:0;border-radius:15px;cursor:pointer;display:grid;place-items:center;font-size:18px}
+.send{background:var(--grad);color:#0b0b14;font-size:21px;font-weight:800;box-shadow:0 8px 22px rgba(95,150,255,.38)}
+.send:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 12px 28px rgba(95,150,255,.5)}.send:active:not(:disabled){transform:scale(.94)}
+.attach,.mic,.imagegen{background:var(--surface3)}.attach:hover,.mic:hover:not(:disabled),.imagegen:hover{background:#2e2e42}
+.imagegen.active{background:rgba(139,124,255,.28);box-shadow:inset 0 0 0 1px var(--accent)}
+.mic.recording{background:#7f1d1d;animation:pulse 1s infinite}.send:disabled,.mic:disabled{opacity:.35;cursor:not-allowed}
+.generated-video{width:min(100%,720px);border-radius:16px;display:block;margin-top:10px;background:#000}.video-panel{}.file-input{display:none}
+.status{max-width:820px;margin:8px auto 0;color:#7d7d94;font-size:11px;padding:0 10px}
+.file-pill{max-width:820px;margin:0 auto 8px;color:#cfcfe0;font-size:12px;padding:0 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.file-pill:not(:empty){background:var(--surface2);border:1px solid var(--line2);border-radius:999px;padding:6px 12px;width:fit-content;max-width:calc(100% - 20px)}
+.msg-actions{display:flex;gap:6px;margin-top:10px}
+.msg-action{border:1px solid var(--line2);background:var(--surface2);color:#bdbdd0;border-radius:10px;padding:5px 11px;font-size:11px;cursor:pointer}
+.msg-action:hover{background:var(--surface3);color:#fff;border-color:#4a4a68}
+.sources{margin-top:11px;padding-top:10px;border-top:1px solid var(--line);font-size:12px}.sources-title{color:#a9a9bd;margin-bottom:5px}
+.source-link{display:block;color:#b9b2ff;text-decoration:none;padding:3px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.source-link:hover{color:#fff;text-decoration:underline}
+.web-badge{display:inline-block;font-size:10px;color:#b9b2ff;background:rgba(139,124,255,.12);border:1px solid rgba(139,124,255,.28);border-radius:8px;padding:2px 8px;margin-bottom:7px}
+.image-panel{max-width:820px;margin:0 auto 8px;display:none;padding:8px;background:rgba(22,22,31,.94);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid var(--line2);border-radius:18px;gap:8px;align-items:center;box-shadow:0 14px 40px rgba(0,0,0,.4)}
+.image-panel.open{display:flex;animation:rise .22s ease both}
+.image-panel input{flex:1;min-width:0;background:#0d0d13;border:1px solid var(--line2);color:#fff;border-radius:12px;padding:11px 12px;outline:none;font:inherit;font-size:15px}
+.image-panel input:focus{border-color:var(--accent);box-shadow:var(--ring)}
+.image-panel button{border:1px solid var(--line2);background:var(--surface3);color:#fff;border-radius:12px;padding:10px 14px;cursor:pointer;font-size:13px}
+.image-panel input+button{background:var(--grad);color:#0b0b14;font-weight:700;border:0}.image-panel button:hover{filter:brightness(1.12)}
+.generated-image{max-width:100%;border-radius:16px;margin-top:10px;display:block;border:1px solid var(--line2)}
+.image-tools{display:flex;gap:7px;margin-top:8px;align-items:center}.image-download{text-decoration:none!important;display:inline-flex!important;align-items:center;justify-content:center}
+.image-caption{font-size:12px;color:#9b9bb0;margin-top:6px}.file-tools{display:flex;gap:7px;margin-top:10px;align-items:center;flex-wrap:wrap}.file-download{text-decoration:none!important}
+.code-block{margin:12px 0 4px;background:#0a0a10;border:1px solid var(--line2);border-radius:14px;overflow:hidden;direction:ltr;text-align:left;box-shadow:0 8px 26px rgba(0,0,0,.35)}
+.code-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:linear-gradient(180deg,#1b1b27,#15151e);border-bottom:1px solid var(--line2);color:#a9a9bd;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.code-head span{margin-right:auto;text-transform:lowercase;letter-spacing:.03em;color:#c9c2ff}
+.code-copy,.code-download{border:1px solid var(--line2);background:var(--surface3);color:#e2e2ee;border-radius:8px;padding:4px 10px;font-size:11px;cursor:pointer;text-decoration:none;font-family:"Vazirmatn",system-ui,Tahoma,sans-serif}
+.code-copy:hover,.code-download:hover{background:#2e2e42;border-color:#4a4a68}
+.code-block code{display:block;white-space:pre;overflow:auto;padding:14px 16px;font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#e8e8f2}
+.preview-btn{border:1px solid rgba(61,220,151,.4);background:rgba(61,220,151,.12);color:#c9ffe6;border-radius:10px;padding:7px 13px;cursor:pointer}.preview-btn:hover:not(:disabled){background:rgba(61,220,151,.2)}
+.code-bundle-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.preview-wrap{margin-top:10px;border:1px solid var(--line2);border-radius:14px;overflow:hidden;background:#fff}.preview-wrap iframe{width:100%;height:440px;border:0;background:white}
+.build-card{max-width:820px;margin:0 auto 14px;padding:16px;border:1px solid rgba(61,220,151,.25);border-radius:20px;background:linear-gradient(135deg,rgba(16,32,26,.94),rgba(18,18,26,.94));direction:rtl;box-shadow:0 16px 44px rgba(0,0,0,.45)}
+.road{height:74px;border-radius:14px;overflow:hidden;position:relative;background:linear-gradient(#13231d 0 35%,#2c3138 35% 65%,#13231d 65%)}
+.road:before{content:"";position:absolute;left:0;right:0;top:50%;height:4px;background:repeating-linear-gradient(90deg,#f4e6a6 0 28px,transparent 28px 55px);transform:translateY(-50%);animation:roadmove .55s linear infinite}
+.road:after{content:"";position:absolute;left:50%;top:0;bottom:0;width:2px;background:#ffffff18;box-shadow:-80px 0 #ffffff12,80px 0 #ffffff12}
+.build-title{font-size:13px;font-weight:700;color:#e5fff1;margin:0 0 10px}.build-stage{font-size:12px;color:#c6d4ce;margin-top:10px}
+.build-dots{display:flex;gap:5px;margin-top:9px}.build-dots i{width:6px;height:6px;border-radius:50%;background:var(--ok);animation:dotpulse 1s infinite}.build-dots i:nth-child(2){animation-delay:.2s}.build-dots i:nth-child(3){animation-delay:.4s}
+@keyframes roadmove{to{background-position:55px 0}}@keyframes dotpulse{50%{opacity:.2;transform:scale(.7)}}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}@keyframes pop{from{opacity:0;transform:scale(.96) translateY(-4px)}to{opacity:1;transform:none}}
+.cancel-btn{display:none;border:1px solid #5a3036;background:#2a1a1d;color:#ffd7db;border-radius:9px;padding:4px 10px;font-size:11px;cursor:pointer}.cancel-btn:hover{background:#3a2024}.cancel-btn.show{display:inline-block}
 
-.model3d-panel{display:none;position:fixed;left:14px;right:14px;bottom:100px;z-index:12;max-width:820px;margin:auto;background:#17171d;border:1px solid #34343d;border-radius:16px;padding:14px;box-shadow:0 16px 40px #0009}.model3d-panel.open{display:block}.model3d-panel input[type=text],.model3d-panel select{width:100%;background:#222229;color:#fff;border:1px solid #3b3b46;border-radius:10px;padding:12px;font:inherit;margin:6px 0 10px}.model3d-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.model3d-row button{border:0;border-radius:10px;padding:11px 15px;background:#19c37d;color:#07130d;font-weight:700;cursor:pointer}.model3d-row .secondary{background:#303039;color:#eee}.model3d-note{color:#aaa;font-size:12px;line-height:1.7;margin:4px 0 10px}.overlay{display:none;position:fixed;inset:0;background:#0007;z-index:15}
+.model3d-panel{display:none;position:fixed;left:14px;right:14px;bottom:104px;z-index:12;max-width:820px;margin:auto;background:rgba(20,20,28,.96);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border:1px solid var(--line2);border-radius:22px;padding:16px;box-shadow:0 24px 64px rgba(0,0,0,.6)}
+.model3d-panel.open{display:block;animation:rise .24s ease both}
+.model3d-panel input[type=text],.model3d-panel select{width:100%;background:#0d0d13;color:#fff;border:1px solid var(--line2);border-radius:12px;padding:12px;font:inherit;margin:6px 0 10px}
+.model3d-panel input[type=text]:focus,.model3d-panel select:focus{border-color:var(--accent);box-shadow:var(--ring);outline:0}
+.model3d-panel input[type=checkbox]{accent-color:var(--accent)}
+.model3d-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.model3d-row button{border:0;border-radius:12px;padding:11px 18px;background:linear-gradient(135deg,#3ddc97,#58d5c9);color:#06140f;font-weight:700;cursor:pointer;box-shadow:0 8px 20px rgba(61,220,151,.25)}
+.model3d-row button:hover:not(:disabled){transform:translateY(-1px)}.model3d-row button:disabled{opacity:.5;cursor:wait}
+.model3d-row .secondary{background:var(--surface3);color:#eee;box-shadow:none}
+.model3d-note{color:#9b9bb0;font-size:12px;line-height:1.8;margin:4px 0 10px}
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);z-index:15}
 .overlay.open{display:block}@keyframes pulse{50%{opacity:.55}}
-@media(min-width:900px){.sidebar{position:relative;transform:none;order:2;border-left:1px solid var(--line)}.close-side{display:none}.overlay{display:none!important}.main{width:calc(100% - 290px)}}
+@media(min-width:900px){.sidebar{position:relative;transform:none;order:2;border-left:1px solid var(--line);box-shadow:none}.close-side{display:none}.overlay{display:none!important}.main{width:calc(100% - 290px)}.composer-wrap{left:290px}.model3d-panel{left:304px}}
+@media(max-width:600px){.send,.attach,.mic,.imagegen{width:40px;height:40px;border-radius:13px;font-size:17px}.composer{gap:4px;padding:6px;border-radius:22px}textarea{padding:10px 4px}.brand{font-size:16px}.messages{padding:20px 10px 160px}.msg{gap:9px;margin-bottom:16px}.avatar{width:30px;height:30px;border-radius:10px}.msg.user .bubble{max-width:calc(100% - 40px)}.empty h1{font-size:26px}.image-panel{flex-wrap:wrap}.image-panel input{flex-basis:100%}.model3d-panel{bottom:96px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 </style>
 </head>
 <body>
@@ -1284,12 +1373,12 @@ def home():
 
 @app.get("/health")
 def health():
-    return jsonify(ok=True, model=MODEL, vision_model=VISION_MODEL, transcription_model=TRANSCRIBE_MODEL, image_generation=IMAGE_GEN_PROVIDER)
+    return jsonify(ok=True, provider="OrcaRouter", model=MODEL, vision_model=VISION_MODEL, transcription_model=TRANSCRIBE_MODEL, image_generation=IMAGE_GEN_PROVIDER)
 
 
 @app.get("/api/info")
 def info():
-    return jsonify(ok=True, model=MODEL, vision_model=VISION_MODEL, transcription_model=TRANSCRIBE_MODEL, image_generation=IMAGE_GEN_PROVIDER)
+    return jsonify(ok=True, provider="OrcaRouter", model=MODEL, vision_model=VISION_MODEL, transcription_model=TRANSCRIBE_MODEL, image_generation=IMAGE_GEN_PROVIDER)
 
 
 @app.get("/api/chats")
@@ -1366,7 +1455,7 @@ def chat():
         file_requested = is_file_request(last_user)
         if file_requested:
             prepared.insert(0, {"role": "system", "content": requested_file_instruction(last_user)})
-        reply = groq_chat(prepared, use_vision=has_image)
+        reply = orcarouter_chat(prepared, use_vision=has_image)
         code_bundle = save_code_bundle(last_user, reply)
         file_info = None
         if code_bundle:
@@ -1452,15 +1541,28 @@ def _v2fun_headers():
     return {"Authorization": f"Bearer {V2FUN_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
 
 
-def _v2fun_get_task(endpoint, task_uuid):
-    r = requests.get(f"{V2FUN_API_BASE}/{endpoint}/{task_uuid}", headers=_v2fun_headers(), timeout=45)
-    if not r.ok:
-        raise RuntimeError(f"V2Fun وضعیت کار را برنگرداند ({r.status_code}): {r.text[:400]}")
-    return r.json()
+def _v2fun_get_task(endpoint, task_uuid, max_retries=5):
+    """Fetch task status while respecting V2Fun rate limits (429)."""
+    url = f"{V2FUN_API_BASE}/{endpoint}/{task_uuid}"
+    for attempt in range(max_retries + 1):
+        r = requests.get(url, headers=_v2fun_headers(), timeout=45)
+        if r.status_code == 429 and attempt < max_retries:
+            retry_after = r.headers.get("Retry-After", "")
+            try:
+                delay = max(5, min(60, int(float(retry_after)))) if retry_after else min(60, 10 * (attempt + 1))
+            except (TypeError, ValueError):
+                delay = min(60, 10 * (attempt + 1))
+            print(f"[V2FUN 3D] status_rate_limited=429 retry_in={delay}s attempt={attempt + 1}", flush=True)
+            time.sleep(delay)
+            continue
+        if not r.ok:
+            raise RuntimeError(f"V2Fun وضعیت کار را برنگرداند ({r.status_code}): {r.text[:400]}")
+        return r.json()
+    raise RuntimeError("V2Fun برای بررسی وضعیت محدودیت درخواست (429) اعمال کرد؛ چند دقیقه صبر کن و از ساخت مجدد خودداری کن.")
 
 
-def _v2fun_wait(endpoint, payload, timeout_seconds=240):
-    # Keep request diagnostics in Render logs without ever printing the API key.
+def _v2fun_wait(endpoint, payload, timeout_seconds=600):
+    # Create exactly once: retrying POST blindly can create duplicate paid jobs.
     print(f"[V2FUN 3D] POST endpoint={endpoint} texture={payload.get('with_texture', 'n/a')}", flush=True)
     r = requests.post(f"{V2FUN_API_BASE}/{endpoint}", headers=_v2fun_headers(), json=payload, timeout=60)
     print(f"[V2FUN 3D] create_http={r.status_code} body={r.text[:1200]}", flush=True)
@@ -1470,9 +1572,16 @@ def _v2fun_wait(endpoint, payload, timeout_seconds=240):
             raise RuntimeError("کلید V2Fun نامعتبر است یا دسترسی API فعال نیست.")
         if r.status_code == 402:
             raise RuntimeError("اعتبار API در V2Fun کافی نیست؛ موجودی اعتبار را بررسی کن.")
+        if r.status_code == 429:
+            retry_after = r.headers.get("Retry-After", "")
+            suffix = f" زمان انتظار اعلام‌شده: {retry_after} ثانیه." if retry_after else " چند دقیقه صبر کن و دوباره درخواست نده."
+            raise RuntimeError("V2Fun محدودیت تعداد درخواست (429) اعمال کرد." + suffix + " جزئیات: " + detail)
         raise RuntimeError(f"V2Fun خطا داد ({r.status_code}): {detail}")
-    try: data = r.json()
-    except ValueError: raise RuntimeError("V2Fun پاسخ JSON قابل خواندن برنگرداند.")
+    try:
+        data = r.json()
+    except ValueError:
+        raise RuntimeError("V2Fun پاسخ JSON قابل خواندن برنگرداند.")
+
     def find_task_id(obj):
         if isinstance(obj, dict):
             for key in ("task_uuid", "task_id", "uuid", "id"):
@@ -1480,8 +1589,7 @@ def _v2fun_wait(endpoint, payload, timeout_seconds=240):
                 if isinstance(value, str) and value:
                     return value
             for key in ("data", "result", "task", "metadata"):
-                value = obj.get(key)
-                found = find_task_id(value)
+                found = find_task_id(obj.get(key))
                 if found:
                     return found
         elif isinstance(obj, list):
@@ -1490,6 +1598,7 @@ def _v2fun_wait(endpoint, payload, timeout_seconds=240):
                 if found:
                     return found
         return None
+
     def find_status(obj):
         if isinstance(obj, dict):
             for key in ("status", "state", "task_status"):
@@ -1497,28 +1606,27 @@ def _v2fun_wait(endpoint, payload, timeout_seconds=240):
                 if isinstance(value, str) and value.upper() in ("PENDING", "QUEUED", "PROCESSING", "RUNNING", "COMPLETED", "SUCCESS", "SUCCEEDED", "FAILED", "ERROR", "CANCELLED"):
                     return value.upper()
             for key in ("data", "result", "task", "metadata"):
-                value = obj.get(key)
-                found = find_status(value)
+                found = find_status(obj.get(key))
                 if found:
                     return found
         return ""
+
     task_uuid = find_task_id(data)
     if find_status(data) in ("COMPLETED", "SUCCESS", "SUCCEEDED"):
         return data
     if not task_uuid:
-        # Some synchronous responses return a direct result without task_uuid.
-        if data.get("result") or data.get("metadata") or data.get("downloads"):
+        if isinstance(data, dict) and (data.get("result") or data.get("metadata") or data.get("downloads")):
             return data
         raise RuntimeError("V2Fun شناسه کار یا فایل خروجی را برنگرداند.")
+
     deadline = time.time() + timeout_seconds
+    poll_delay = 10  # Avoid hammering the task-status endpoint (common cause of 429).
     while time.time() < deadline:
         status = find_status(data)
         print(f"[V2FUN 3D] poll_status={status or 'unknown'} task={task_uuid}", flush=True)
         if status in ("COMPLETED", "SUCCESS", "SUCCEEDED"):
             return data
         if status in ("FAILED", "ERROR", "CANCELLED"):
-            # V2Fun may put the actual failure reason inside result/metadata rather
-            # than top-level error/message. Keep the diagnostic compact for UI/logs.
             def find_error(obj):
                 if isinstance(obj, dict):
                     for key in ("error", "message", "detail", "failure_reason", "error_message", "reason"):
@@ -1527,28 +1635,28 @@ def _v2fun_wait(endpoint, payload, timeout_seconds=240):
                             return value.strip()
                     for key in ("data", "result", "task", "metadata"):
                         found = find_error(obj.get(key))
-                        if found: return found
+                        if found:
+                            return found
                 elif isinstance(obj, list):
                     for value in obj:
                         found = find_error(value)
-                        if found: return found
+                        if found:
+                            return found
                 return None
             reason = find_error(data)
             if not reason:
-                result_detail = data.get("result")
-                if isinstance(result_detail, (dict, list, str)) and result_detail:
-                    reason = json.dumps(result_detail, ensure_ascii=False)[:900]
-            if not reason:
-                meta_detail = data.get("metadata")
-                if isinstance(meta_detail, (dict, list)) and meta_detail:
-                    reason = json.dumps(meta_detail, ensure_ascii=False)[:900]
+                detail = data.get("result") if isinstance(data, dict) else None
+                if isinstance(detail, (dict, list, str)) and detail:
+                    reason = json.dumps(detail, ensure_ascii=False)[:900]
             if not reason:
                 reason = "V2Fun وضعیت FAILED برگرداند؛ علت در پاسخ API مشخص نبود."
             raise RuntimeError("ساخت مدل در V2Fun ناموفق شد: " + str(reason)[:1000])
-        time.sleep(3)
-        data = _v2fun_get_task(endpoint, task_uuid)
-    raise RuntimeError("ساخت مدل هنوز تمام نشده است. لطفاً کمی بعد دوباره تلاش کن؛ درخواست جدید ممکن است اعتبار دیگری مصرف کند.")
 
+        time.sleep(poll_delay)
+        data = _v2fun_get_task(endpoint, task_uuid)
+        poll_delay = min(25, poll_delay + 5)  # 10, 15, 20, 25 seconds
+
+    raise RuntimeError("ساخت مدل بیش از ۱۰ دقیقه طول کشید. درخواست ثبت‌شده را دوباره نساز؛ کمی بعد وضعیت را بررسی کن.")
 
 def _v2fun_download_url(value):
     urls=[]
@@ -1788,7 +1896,9 @@ def transcribe():
 
         filename = Path(f.filename).name or "voice.webm"
         mime = (f.mimetype or "audio/webm").split(";")[0]
-        # Groq accepts webm, ogg, wav, mp3, m4a, etc. No FFmpeg is needed.
+        if not GROQ_TRANSCRIBE_API_KEY:
+            return jsonify(error="برای تبدیل صدای ورودی به متن، کلید جداگانه GROQ_TRANSCRIBE_API_KEY لازم است. چت متنی از OrcaRouter استفاده می‌کند."), 503
+        # Audio transcription remains on Groq; OrcaRouter chat key is not reused here.
         files = {"file": (filename, audio_bytes, mime)}
         payload = {
             "model": TRANSCRIBE_MODEL or "whisper-large-v3-turbo",
@@ -1797,8 +1907,8 @@ def transcribe():
             "temperature": "0",
         }
         r = requests.post(
-            f"{GROQ_API_BASE}/audio/transcriptions",
-            headers={"Authorization": f"Bearer {API_KEY}"},
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {GROQ_TRANSCRIBE_API_KEY}"},
             files=files,
             data=payload,
             timeout=120,

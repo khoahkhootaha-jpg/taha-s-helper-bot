@@ -1,20 +1,22 @@
 services:
   - type: web
-    name: taha-s-helper-bot
+    name: taha-helper-bot
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app
     envVars:
-      - key: GROQ_API_KEY
+      - key: ORCAROUTER_API_KEY
         sync: false
-      - key: GROQ_MODEL
-        value: gemini-3.8-flash
-      - key: GROQ_VISION_MODEL
-        value: gemini-3.8-flash
-      - key: GROQ_API_KEY
+      - key: ORCAROUTER_MODEL
+        value: z-ai/glm-5.3-flash-free
+      - key: ORCAROUTER_VISION_MODEL
+        value: z-ai/glm-5.3-flash-free
+      - key: GROQ_TRANSCRIBE_API_KEY
         sync: false
       - key: POLLINATIONS_API_KEY
         sync: false
       - key: V2FUN_API_KEY
+        sync: false
+      - key: VADOO_API_KEY
         sync: false
