@@ -138,7 +138,7 @@ async function sendMessage(){
  if(isCodeBuildRequest(text))startBuildAnimation(text);
  let shownText=text;
  activeController=new AbortController();
- const timer=setTimeout(()=>activeController&&activeController.abort(),90000);
+ const timer=setTimeout(()=>activeController&&activeController.abort(),240000);
  try{
   if(file){
    document.getElementById('status').textContent='در حال خواندن فایل…';
@@ -177,7 +177,7 @@ async function generateVideo(){
  const p=document.getElementById('videoPrompt').value.trim();
  if(!p){document.getElementById('status').textContent='توضیح ویدیو را بنویس.';return}
  setBusy(true);document.getElementById('status').textContent='🎬 در حال ارسال درخواست به Vadoo AI…';activeController=new AbortController();
- const timer=setTimeout(()=>activeController&&activeController.abort(),90000);
+ const timer=setTimeout(()=>activeController&&activeController.abort(),240000);
  try{
   const r=await fetch('/api/generate-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:p,duration:'30-60',aspect_ratio:'16:9'}),signal:activeController.signal});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d.error||('HTTP '+r.status+' - ساخت ویدیو ناموفق بود')));

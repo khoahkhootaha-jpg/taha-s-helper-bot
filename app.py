@@ -436,12 +436,18 @@ def gemini_chat(messages, use_vision=False):
 
     for attempt in range(max_attempts):
         try:
+            print(
+                f"[GEMINI CHAT REQUEST] model={model} messages={len(request_messages)} "
+                f"vision={bool(use_vision)} attempt={attempt + 1}/{max_attempts}",
+                flush=True,
+            )
             r = requests.post(
                 f"{GEMINI_API_BASE}/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=(20, 120 if use_vision else 90),
+                timeout=(20, 75 if use_vision else 45),
             )
+            print(f"[GEMINI CHAT RESPONSE] status={r.status_code} model={model}", flush=True)
 
             if r.status_code == 413:
                 if not compacted:
@@ -470,11 +476,11 @@ def gemini_chat(messages, use_vision=False):
                         server_wait = 0.0
                     backoff = min(8.0, 1.5 * (2 ** attempt))
                     wait_seconds = min(8.0, max(backoff, server_wait)) + random.uniform(0.1, 0.5)
-                    print(f"[GEMINI 503] model={model}, retry={attempt + 1}/{max_attempts - 1}, wait={wait_seconds:.1f}s")
+                    print(f"[GEMINI 503] model={model}, retry={attempt + 1}/{max_attempts - 1}, wait={wait_seconds:.1f}s", flush=True)
                     time.sleep(wait_seconds)
                     continue
 
-                print("[GEMINI 503 FINAL]", detail)
+                print("[GEMINI 503 FINAL]", detail, flush=True)
                 raise RuntimeError(
                     "سرور Gemini موقتاً شلوغ است (503). چند بار تلاش کردیم اما هنوز پاسخ نمی‌دهد؛ "
                     "لطفاً چند دقیقه دیگر دوباره پیام را بفرست."
@@ -1211,7 +1217,7 @@ async function sendMessage(){
  if(isCodeBuildRequest(text))startBuildAnimation(text);
  let shownText=text;
  activeController=new AbortController();
- const timer=setTimeout(()=>activeController&&activeController.abort(),90000);
+ const timer=setTimeout(()=>activeController&&activeController.abort(),240000);
  try{
   if(file){
    document.getElementById('status').textContent='در حال خواندن فایل…';
@@ -1250,7 +1256,7 @@ async function generateVideo(){
  const p=document.getElementById('videoPrompt').value.trim();
  if(!p){document.getElementById('status').textContent='توضیح ویدیو را بنویس.';return}
  setBusy(true);document.getElementById('status').textContent='🎬 در حال ارسال درخواست به Vadoo AI…';activeController=new AbortController();
- const timer=setTimeout(()=>activeController&&activeController.abort(),90000);
+ const timer=setTimeout(()=>activeController&&activeController.abort(),240000);
  try{
   const r=await fetch('/api/generate-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:p,duration:'30-60',aspect_ratio:'16:9'}),signal:activeController.signal});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d.error||('HTTP '+r.status+' - ساخت ویدیو ناموفق بود')));
@@ -1452,11 +1458,23 @@ def delete_chat(chat_id):
 
 @app.post("/api/chat")
 def chat():
+    print(
+        f"[CHAT INCOMING] path=/api/chat content_type={request.content_type!r} "
+        f"content_length={request.content_length}",
+        flush=True,
+    )
     data = request.get_json(silent=True) or {}
     messages = data.get("messages") or []
     chat_id = data.get("chat_id") or str(uuid.uuid4())
     if not messages:
+        print("[CHAT REJECTED] empty messages payload", flush=True)
         return jsonify(error="پیام خالی است."), 400
+
+    print(
+        f"[CHAT ACCEPTED] chat_id={chat_id} messages={len(messages)} "
+        f"last_role={(messages[-1].get('role') if isinstance(messages[-1], dict) else 'invalid')}",
+        flush=True,
+    )
 
     try:
         # Keep the server-side history independent from the browser refresh.
@@ -1488,7 +1506,9 @@ def chat():
         file_requested = is_file_request(last_user)
         if file_requested:
             prepared.insert(0, {"role": "system", "content": requested_file_instruction(last_user)})
+        print(f"[CHAT PREPARED] messages={len(prepared)} has_image={bool(has_image)}", flush=True)
         reply = gemini_chat(prepared, use_vision=has_image)
+        print(f"[CHAT SUCCESS] chat_id={chat_id} reply_chars={len(reply)}", flush=True)
         code_bundle = save_code_bundle(last_user, reply)
         file_info = None
         if code_bundle:
@@ -1502,7 +1522,7 @@ def chat():
         save_chat(chat_id, normalized, make_title(normalized))
         return jsonify(reply=reply, model=(VISION_MODEL if has_image and VISION_MODEL else MODEL), chat_id=chat_id, sources=sources, file_url=(file_info["url"] if file_info else None), file_name=(file_info["name"] if file_info else None), code_bundle=code_bundle)
     except Exception as e:
-        print("\n[CHAT ERROR]", repr(e))
+        print("\n[CHAT ERROR]", repr(e), flush=True)
         return jsonify(error=str(e)), 500
 
 
